@@ -390,7 +390,8 @@
     BULLET: 'bullet',
     PRESENT: 'present',
     ORNAMENT: 'ornament',
-    TREE: 'tree'
+    TREE: 'tree',
+    PROP: 'prop'
   };
 
   function tileAt(world, tx, ty){
@@ -404,7 +405,7 @@
     return solidTile(tileAt(world, tx,ty));
   }
 
-  function collideCircle(world, x,y,r){
+  function collideCircle(world, x,y,r, ents=[]){
     // test surrounding tiles
     const minx = Math.floor((x-r)/TILE), maxx=Math.floor((x+r)/TILE);
     const miny = Math.floor((y-r)/TILE), maxy=Math.floor((y+r)/TILE);
@@ -418,16 +419,23 @@
         if (dist(x,y,cx,cy) <= r) return true;
       }
     }
+    // test props
+    for (const e of ents){
+      if (e.type === ENT.PROP && !e.dead){
+        // props are solid circles
+        if (dist(x,y,e.x,e.y) <= (r+e.r)) return true;
+      }
+    }
     return false;
   }
 
-  function tryMoveCircle(world, ent, dx,dy){
+  function tryMoveCircle(world, ent, dx,dy, ents=[]){
     const steps = 4;
     let okx=true, oky=true;
     for (let i=0;i<steps;i++){
       const sx=dx/steps, sy=dy/steps;
-      if (!collideCircle(world, ent.x+sx, ent.y, ent.r)) ent.x += sx; else okx=false;
-      if (!collideCircle(world, ent.x, ent.y+sy, ent.r)) ent.y += sy; else oky=false;
+      if (!collideCircle(world, ent.x+sx, ent.y, ent.r, ents)) ent.x += sx; else okx=false;
+      if (!collideCircle(world, ent.x, ent.y+sy, ent.r, ents)) ent.y += sy; else oky=false;
     }
     return okx || oky;
   }
@@ -582,6 +590,58 @@
     }, true);
   }
 
+  function makeFurnitureSprite(type, seed){
+    const rng = mulberry32(seed);
+    // types: 0=table, 1=chair, 2=bed, 3=plant
+    if (type===0){ // Table
+      const w=14, h=10;
+      const data = new Uint8Array(w*h);
+      const palette = {0:'rgba(0,0,0,0)', 1:'#5d4037', 2:'#795548', 3:'#3e2723'};
+      const fill = (x,y,W,H,c) => { for(let iy=y;iy<y+H;iy++) for(let ix=x;ix<x+W;ix++) if(ix>=0&&ix<w&&iy>=0&&iy<h) data[iy*w+ix]=c; };
+      fill(1,2,w-2,6,2); // top
+      fill(2,3,w-4,4,1); // inner
+      fill(1,8,2,2,3); fill(w-3,8,2,2,3); // legs
+      fill(1,2,1,6,3); fill(w-2,2,1,6,3); // sides
+      return createSprite(w,h,data,palette);
+    } else if (type===1){ // Chair
+      const w=8, h=12;
+      const data = new Uint8Array(w*h);
+      const palette = {0:'rgba(0,0,0,0)', 1:'#5d4037', 2:'#8d6e63', 3:'#3e2723'};
+      const fill = (x,y,W,H,c) => { for(let iy=y;iy<y+H;iy++) for(let ix=x;ix<x+W;ix++) if(ix>=0&&ix<w&&iy>=0&&iy<h) data[iy*w+ix]=c; };
+      fill(1,6,6,4,2); // seat
+      fill(1,0,1,6,1); fill(6,0,1,6,1); // back
+      fill(2,1,4,1,1); fill(2,3,4,1,1); // slats
+      fill(1,10,1,2,3); fill(6,10,1,2,3); // legs
+      return createSprite(w,h,data,palette);
+    } else if (type===2){ // Bed
+      const w=14, h=18;
+      const data = new Uint8Array(w*h);
+      const palette = {0:'rgba(0,0,0,0)', 1:'#d32f2f', 2:'#e57373', 3:'#ffffff', 4:'#3e2723'};
+      const fill = (x,y,W,H,c) => { for(let iy=y;iy<y+H;iy++) for(let ix=x;ix<x+W;ix++) if(ix>=0&&ix<w&&iy>=0&&iy<h) data[iy*w+ix]=c; };
+      fill(1,1,12,16,4); // frame
+      fill(2,4,10,12,2); // sheet
+      fill(2,4,10,3,3); // pillow area
+      fill(2,2,10,2,3); // pillows
+      fill(2,10,10,5,1); // blanket
+      return createSprite(w,h,data,palette);
+    } else { // Plant
+      const w=10, h=14;
+      const data = new Uint8Array(w*h);
+      const palette = {0:'rgba(0,0,0,0)', 1:'#2e7d32', 2:'#4caf50', 3:'#795548', 4:'#3e2723'};
+      const fill = (x,y,W,H,c) => { for(let iy=y;iy<y+H;iy++) for(let ix=x;ix<x+W;ix++) if(ix>=0&&ix<w&&iy>=0&&iy<h) data[iy*w+ix]=c; };
+      fill(2,9,6,5,3); // pot
+      fill(2,9,6,1,4); // rim
+      // leaves
+      for(let i=0;i<12;i++){
+        const x = randInt(rng, 0, w-2);
+        const y = randInt(rng, 0, 8);
+        data[y*w+x] = (i%2==0) ? 1 : 2;
+        data[(y+1)*w+x+1] = (i%2==0) ? 1 : 2;
+      }
+      return createSprite(w,h,data,palette);
+    }
+  }
+
   // -----------------------------
   // Game state
   // -----------------------------
@@ -697,6 +757,27 @@
     const treeSprite = makeTreeSprite((seed+222)>>>0);
     addEnt(run, { type: ENT.TREE, x: treeX, y: treeY, r: 10, sprite: treeSprite, frame: 0 });
 
+    // Props (furniture)
+    for (const r of world.rooms){
+      // skip start and boss rooms to avoid clutter there
+      if ((r.x+Math.floor(r.w/2)===world.treeTile.x && r.y+Math.floor(r.h/2)===world.treeTile.y) ||
+          (Math.abs(r.x*TILE - world.startPos.x)<100 && Math.abs(r.y*TILE - world.startPos.y)<100)) continue;
+
+      const count = randInt(rng, 1, Math.floor(r.w*r.h/20));
+      for(let k=0; k<count; k++){
+         const type = randInt(rng, 0, 3); // 0=table, 1=chair, 2=bed, 3=plant
+         const tx = randInt(rng, r.x+1, r.x+r.w-2);
+         const ty = randInt(rng, r.y+1, r.y+r.h-2);
+         const x=(tx+0.5)*TILE, y=(ty+0.5)*TILE;
+
+         // simple collision check against other props/entities would be good but minimal works
+         if (dist(x,y,player.x,player.y)<40) continue;
+
+         const sprite = makeFurnitureSprite(type, (seed + r.x + k*55)>>>0);
+         addEnt(run, { type: ENT.PROP, x, y, r: 6, sprite, frame:0, hp: 15, dead:false });
+      }
+    }
+
     // Presents
     const presentCount = Math.floor((10 + level*3) * theme.presentMul);
     run.presentsNeeded = Math.max(6, Math.floor(presentCount * 0.65));
@@ -714,7 +795,7 @@
 
     // Enemies
     const baseEnemies = Math.floor((14 + level*6) * theme.enemyMul);
-    run.enemiesRemaining = baseEnemies;
+    run.enemiesRemaining = 0;
 
     for (let i=0;i<baseEnemies;i++){
       const room = world.rooms[randInt(rng, 0, Math.max(0,world.rooms.length-1))] || {x:20,y:20,w:10,h:10};
@@ -741,6 +822,7 @@
         wx: x,
         wy: y,
       });
+      run.enemiesRemaining++;
     }
 
     // Boss
@@ -748,10 +830,15 @@
     const bossSeed = (seed ^ 0xB055) >>> 0;
     const bossSprite = makeBossSprite(bossSeed, theme);
 
+    // spawn boss safely inside room bounds
+    const far = world.rooms.find(r => r.x+Math.floor(r.w/2) === world.treeTile.x && r.y+Math.floor(r.h/2) === world.treeTile.y) || {x:world.treeTile.x-4, y:world.treeTile.y-4, w:8, h:8};
+    const bossX = clamp(treeX + 60, (far.x+1.5)*TILE, (far.x+far.w-1.5)*TILE);
+    const bossY = treeY;
+
     const boss = addEnt(run, {
       type: ENT.BOSS,
-      x: treeX + 60,
-      y: treeY,
+      x: bossX,
+      y: bossY,
       r: 12,
       hp: 220 + level*60,
       hpMax: 220 + level*60,
@@ -769,7 +856,7 @@
 
     // Ensure no starting collisions
     for (let t=0;t<50;t++){
-      if (!collideCircle(world, player.x, player.y, player.r)) break;
+      if (!collideCircle(world, player.x, player.y, player.r, run.ents)) break;
       player.x += 8; player.y += 8;
     }
 
@@ -842,35 +929,50 @@
     const dx = p.x - b.x, dy = p.y - b.y;
     const [nx,ny] = norm2(dx,dy);
 
+    // Basic shooting for all bosses (separate from special attacks)
+    b.shootTimer = (b.shootTimer||0) - dt;
+    if (b.shootTimer <= 0) {
+      b.shootTimer = (b.kind === 0) ? 1.5 : (b.kind === 1) ? 1.2 : 0.9;
+      // simple shot at player
+      const a = Math.atan2(ny,nx);
+      run.bullets.push({x:b.x, y:b.y, vx:Math.cos(a)*200, vy:Math.sin(a)*200, r:3, life:1.5, dmg: 8+run.level, from: ENT.BOSS});
+    }
+
     // Boss kinds: 0 poor (charge), 1 suburb (triple shot), 2 rich (ring shot), 3 mansion (summon + laser-ish)
     if (b.kind===0){
       // Charge every ~2.0s
-      if (b.timer>2.0){
+      if (b.timer>1.8){
         b.timer = 0;
         b.phase = 1;
         b.chargeT = 0;
         b.cx = nx; b.cy = ny;
+        // shotgun blast before charge
+        const a = Math.atan2(ny,nx);
+        for(let k=0; k<5; k++){
+            const aa = a + (run.rng()*0.8 - 0.4);
+            run.bullets.push({x:b.x, y:b.y, vx:Math.cos(aa)*220, vy:Math.sin(aa)*220, r:2, life:0.8, dmg: 6+run.level, from: ENT.BOSS});
+        }
       }
       if (b.phase===1){
         b.chargeT += dt;
-        const sp = 240;
-        tryMoveCircle(run.world, b, b.cx*sp*dt, b.cy*sp*dt);
+        const sp = 280; // faster charge
+        tryMoveCircle(run.world, b, b.cx*sp*dt, b.cy*sp*dt, run.ents);
         if (b.chargeT>0.35){ b.phase=0; }
       }
     } else if (b.kind===1){
-      if (b.timer>1.2){
+      if (b.timer>1.0){ // faster
         b.timer=0;
         const a = Math.atan2(ny,nx);
-        for (const off of [-0.18, 0, 0.18]){
+        for (const off of [-0.2, -0.1, 0, 0.1, 0.2]){ // 5 shots instead of 3
           const aa=a+off;
           run.bullets.push({x:b.x, y:b.y, vx:Math.cos(aa)*260, vy:Math.sin(aa)*260, r:2, life:1.4, dmg: 10+run.level, from: ENT.BOSS});
         }
       }
     } else if (b.kind===2){
-      if (b.timer>1.7){
+      if (b.timer>1.5){
         b.timer=0;
-        const n = 14;
-        const base = Math.atan2(ny,nx);
+        const n = 18; // denser ring
+        const base = run.time * 2; // spinning base
         for (let i=0;i<n;i++){
           const aa = base + (i/n)*Math.PI*2;
           run.bullets.push({x:b.x, y:b.y, vx:Math.cos(aa)*210, vy:Math.sin(aa)*210, r:2, life:1.6, dmg: 9+run.level, from: ENT.BOSS});
@@ -878,7 +980,7 @@
       }
     } else {
       // mansion: alternating summon and beam-like burst
-      if (b.timer>2.2){
+      if (b.timer>1.8){
         b.timer=0;
         if (chance(run.rng, 0.5)){
           // summon 3 guards
@@ -893,9 +995,9 @@
         } else {
           // burst volley along aim
           const a = Math.atan2(ny,nx);
-          for (let k=0;k<6;k++){
-            const aa = a + (run.rng()*2-1)*0.10;
-            run.bullets.push({x:b.x, y:b.y, vx:Math.cos(aa)*(320), vy:Math.sin(aa)*(320), r:2, life:1.05, dmg: 12+run.level, from: ENT.BOSS});
+          for (let k=0;k<8;k++){
+            const aa = a + (run.rng()*2-1)*0.12;
+            run.bullets.push({x:b.x, y:b.y, vx:Math.cos(aa)*(340), vy:Math.sin(aa)*(340), r:2, life:1.05, dmg: 12+run.level, from: ENT.BOSS});
           }
         }
       }
@@ -903,7 +1005,7 @@
 
     // gentle pursue
     const sp = (b.speed) * (b.hp < b.hpMax*0.5 ? 1.15 : 1.0);
-    tryMoveCircle(run.world, b, nx*sp*dt, ny*sp*dt);
+    tryMoveCircle(run.world, b, nx*sp*dt, ny*sp*dt, run.ents);
   }
 
   function hurt(run, target, dmg){
@@ -1027,7 +1129,7 @@
 
     if (mx!==0||my!==0){
       const [nx,ny]=norm2(mx,my);
-      tryMoveCircle(world, p, nx*p.speed*dt, ny*p.speed*dt);
+      tryMoveCircle(world, p, nx*p.speed*dt, ny*p.speed*dt, run.ents);
       p.frame = (p.frame + dt*10) % 4;
       if (nx!==0) p.flip = nx<0;
     } else {
@@ -1049,7 +1151,7 @@
           p.dash.charges -= 1;
           const [nx,ny]=norm2(mx,my);
           for (let i=0;i<10;i++){
-            tryMoveCircle(world, p, nx*22, ny*22);
+            tryMoveCircle(world, p, nx*22, ny*22, run.ents);
           }
           p.invuln = Math.max(p.invuln, 0.20);
         }
@@ -1075,12 +1177,20 @@
       if (b.life>0){
         for (const e of run.ents){
           if (e.dead) continue;
-          if (b.from===ENT.PLAYER && (e.type===ENT.ENEMY || e.type===ENT.BOSS)){
+          if (b.from===ENT.PLAYER && (e.type===ENT.ENEMY || e.type===ENT.BOSS || e.type===ENT.PROP)){
             if (dist(b.x,b.y,e.x,e.y) <= (b.r+e.r)){
               hurt(run, e, b.dmg);
               b.life=0;
               break;
             }
+          }
+          // Enemy bullets hitting props
+          if ((b.from===ENT.ENEMY || b.from===ENT.BOSS) && e.type===ENT.PROP){
+             if (dist(b.x,b.y,e.x,e.y) <= (b.r+e.r)){
+               hurt(run, e, b.dmg);
+               b.life=0;
+               break;
+             }
           }
           if ((b.from===ENT.ENEMY || b.from===ENT.BOSS) && e.type===ENT.PLAYER){
             if (dist(b.x,b.y,e.x,e.y) <= (b.r+e.r)){
@@ -1110,11 +1220,11 @@
             e.wy = e.y + (run.rng()*2-1)*140;
           }
           const [nx,ny]=norm2(e.wx-e.x, e.wy-e.y);
-          tryMoveCircle(world, e, nx*e.speed*dt, ny*e.speed*dt);
+            tryMoveCircle(world, e, nx*e.speed*dt, ny*e.speed*dt, run.ents);
           if (nx!==0) e.flip = nx<0;
         } else {
           const [nx,ny]=norm2(p.x-e.x, p.y-e.y);
-          tryMoveCircle(world, e, nx*e.speed*dt, ny*e.speed*dt);
+            tryMoveCircle(world, e, nx*e.speed*dt, ny*e.speed*dt, run.ents);
           if (nx!==0) e.flip = nx<0;
 
           e.atkTimer -= dt;
@@ -1377,6 +1487,10 @@
         ctx.beginPath();
         ctx.arc(x,y,22+Math.sin(run.time*2)*2,0,Math.PI*2);
         ctx.fill();
+      }
+
+      if (e.type===ENT.PROP){
+        e.sprite.draw(Math.floor(x-(e.sprite.w)/2), Math.floor(y-(e.sprite.h)/2), 1, 0, false);
       }
 
       if (e.type===ENT.ORNAMENT){
