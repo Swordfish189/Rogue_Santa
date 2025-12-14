@@ -764,6 +764,53 @@
   // -----------------------------
   let game = null;
 
+  const WEAPON_MAP = ['shotgun', 'uzi', 'sniper'];
+
+  function createGun(kind, run){
+    const baseDmg = 12 * run.baseStats.damageMul;
+    if (kind === 'shotgun') {
+        return {
+            kind: 'shotgun',
+            reload: 0,
+            reloadMax: 0.55 * run.baseStats.reloadMul, // slow
+            spread: 0.35,
+            bulletSpeed: 290,
+            damage: baseDmg * 0.7, // lower per bullet
+            count: 5 // 5 bullets
+        };
+    } else if (kind === 'uzi') {
+        return {
+            kind: 'uzi',
+            reload: 0,
+            reloadMax: 0.08 * run.baseStats.reloadMul, // very fast
+            spread: 0.22,
+            bulletSpeed: 340,
+            damage: baseDmg * 0.6, // low damage
+            count: 1
+        };
+    } else if (kind === 'sniper') {
+        return {
+            kind: 'sniper',
+            reload: 0,
+            reloadMax: 0.9 * run.baseStats.reloadMul, // very slow
+            spread: 0.01,
+            bulletSpeed: 480,
+            damage: baseDmg * 3.5, // high damage
+            count: 1
+        };
+    }
+    // Default Pistol
+    return {
+        kind: 'pistol',
+        reload: 0,
+        reloadMax: 0.18 * run.baseStats.reloadMul,
+        spread: 0.08,
+        bulletSpeed: 320,
+        damage: baseDmg,
+        count: 1
+    };
+  }
+
   function applyMetaToBaseStats(){
     const hpLv = meta.skills.hp|0;
     const dmgLv = meta.skills.dmg|0;
@@ -814,6 +861,9 @@
       world: null,
       // UI selection in meta shop
       shopIndex: 0,
+      // Inventory
+      inventory: ['pistol'],
+      weaponIdx: 0,
     };
 
     loadLevel(run, 1);
@@ -854,16 +904,8 @@
         cd: 0,
         cdMax: 0.9 * (1/run.baseStats.dashCooldownMul)
       },
-      // default pistol
-      gun: {
-        kind: 'pistol',
-        reload: 0,
-        reloadMax: 0.18 * run.baseStats.reloadMul,
-        spread: 0.08,
-        bulletSpeed: 320,
-        damage: 12 * run.baseStats.damageMul,
-        count: 1
-      },
+      // weapon from inventory
+      gun: createGun(run.inventory ? run.inventory[run.weaponIdx] : 'pistol', run),
       invuln: 0,
       frame: 0,
       flip: false,
@@ -1323,6 +1365,17 @@
       }
     } else run._shiftDown = false;
 
+    // Weapon Switching
+    if (key('KeyQ') && !run._qDown){
+      run._qDown = true;
+      if (run.inventory.length > 1){
+        run.weaponIdx = (run.weaponIdx + 1) % run.inventory.length;
+        const newKind = run.inventory[run.weaponIdx];
+        p.gun = createGun(newKind, run);
+        run.msg = 'Switched to: ' + newKind.toUpperCase();
+      }
+    } else if (!key('KeyQ')) run._qDown = false;
+
     // Shooting
     p.gun.reload = Math.max(0, p.gun.reload - dt);
     if (key('Space')){
@@ -1487,42 +1540,14 @@
 
       if (e.type===ENT.WEAPON){
         if (dist(e.x,e.y,p.x,p.y) < (p.r+e.r+4)){
-          // 0=shotgun, 1=uzi, 2=sniper
-          const baseDmg = 12 * run.baseStats.damageMul;
-          if (e.kind===0){
-              p.gun = {
-                  kind: 'shotgun',
-                  reload: 0,
-                  reloadMax: 0.55 * run.baseStats.reloadMul, // slow
-                  spread: 0.35,
-                  bulletSpeed: 290,
-                  damage: baseDmg * 0.7, // lower per bullet
-                  count: 5 // 5 bullets
-              };
-              run.msg = 'Equipped: SHOTGUN';
-          } else if (e.kind===1){
-              p.gun = {
-                  kind: 'uzi',
-                  reload: 0,
-                  reloadMax: 0.08 * run.baseStats.reloadMul, // very fast
-                  spread: 0.22,
-                  bulletSpeed: 340,
-                  damage: baseDmg * 0.6, // low damage
-                  count: 1
-              };
-              run.msg = 'Equipped: UZI';
-          } else {
-              p.gun = {
-                  kind: 'sniper',
-                  reload: 0,
-                  reloadMax: 0.9 * run.baseStats.reloadMul, // very slow
-                  spread: 0.01,
-                  bulletSpeed: 480,
-                  damage: baseDmg * 3.5, // high damage
-                  count: 1
-              };
-              run.msg = 'Equipped: SNIPER';
+          const kindStr = WEAPON_MAP[e.kind]; // 0=shotgun, etc
+          if (!run.inventory.includes(kindStr)){
+             run.inventory.push(kindStr);
           }
+          // auto equip
+          run.weaponIdx = run.inventory.indexOf(kindStr);
+          p.gun = createGun(kindStr, run);
+          run.msg = 'Picked up: ' + kindStr.toUpperCase();
           e.dead = true;
         }
       }
@@ -1815,7 +1840,8 @@
     ctx.fillStyle = 'rgba(216,225,238,0.95)';
     ctx.font = '12px ui-monospace, monospace';
     ctx.fillText(`Level ${run.level} — ${theme.name}`, 16, 18);
-    ctx.fillText(`🎁 ${run.presentsTaken}/${run.presentsNeeded}  |  Enemies ${run.enemiesRemaining}  |  Boss ${run.bossAlive?'Alive':'Dead'}  |  Run 💠 ${run.ornamentsEarnedThisRun}`, 16, 36);
+    const wName = (p.gun.kind||'pistol').toUpperCase();
+    ctx.fillText(`🎁 ${run.presentsTaken}/${run.presentsNeeded}  |  Enemies ${run.enemiesRemaining}  |  Boss ${run.bossAlive?'Alive':'Dead'}  |  Weapon: ${wName} (Q)`, 16, 36);
 
     // Aim indicator
     const ax = p.x + run.aimX*22 - camX;
