@@ -93,45 +93,9 @@
   // -----------------------------
   // Pixel sprites (procedural)
   // -----------------------------
-  // We generate small pixel grids (e.g., 12x12) and render them scaled.
-  function makeSprite(seed, w, h, palette, symmetry=true){
-    const rng = mulberry32(seed);
-    const data = new Uint8Array(w*h);
-
-    const mid = Math.floor(w/2);
-    for (let y=0;y<h;y++){
-      for (let x=0;x<w;x++){
-        const xx = symmetry ? (x<mid ? x : w-1-x) : x;
-        const n = rng();
-        let v = 0;
-        // Weighted shapes: center mass + details
-        const cx = mid-0.5, cy = h*0.55;
-        const d = Math.hypot(xx-cx, y-cy);
-        const core = clamp(1 - d/(h*0.65), 0, 1);
-        if (core > 0.25 && n < core*0.9) v = 2;
-        if (core > 0.55 && n < core*0.6) v = 3;
-        if (n < 0.06) v = 1; // sparkle/detail
-        data[y*w + x] = v;
-      }
-    }
-
-    // carve a face window sometimes
-    if (chance(rng, 0.9)){
-      const fx = mid - randInt(rng, 1, 2);
-      const fy = randInt(rng, 3, 5);
-      const fw = randInt(rng, 3, 5);
-      const fh = randInt(rng, 2, 3);
-      for (let y=fy;y<fy+fh;y++) for (let x=fx;x<fx+fw;x++) data[y*w+x]=0;
-      // eyes
-      if (fw>=4 && fh>=2){
-        data[(fy+0)*w + (fx+1)] = 1;
-        data[(fy+0)*w + (fx+fw-2)] = 1;
-      }
-    }
-
-    // return render function
+  function createSprite(w, h, data, palette){
     return {
-      w,h,data,palette,
+      w, h, data, palette,
       draw(px,py,scale,frame=0,flip=false){
         // tiny animation: frame shifts details
         const wobble = (frame%2===0) ? 0 : 1;
@@ -150,6 +114,28 @@
         }
       }
     };
+  }
+
+  // Legacy noise generator for props (presents, trees)
+  function makeSprite(seed, w, h, palette, symmetry=true){
+    const rng = mulberry32(seed);
+    const data = new Uint8Array(w*h);
+    const mid = Math.floor(w/2);
+    for (let y=0;y<h;y++){
+      for (let x=0;x<w;x++){
+        const xx = symmetry ? (x<mid ? x : w-1-x) : x;
+        const n = rng();
+        let v = 0;
+        const cx = mid-0.5, cy = h*0.55;
+        const d = Math.hypot(xx-cx, y-cy);
+        const core = clamp(1 - d/(h*0.65), 0, 1);
+        if (core > 0.25 && n < core*0.9) v = 2;
+        if (core > 0.55 && n < core*0.6) v = 3;
+        if (n < 0.06) v = 1;
+        data[y*w + x] = v;
+      }
+    }
+    return createSprite(w,h,data,palette);
   }
 
   // -----------------------------
@@ -268,10 +254,22 @@
   }
 
   function carveCorridor(map, ax,ay,bx,by, floorId){
-    // L-shaped corridor
+    // L-shaped corridor (2 tiles wide for easier movement)
     const horizFirst = ((ax^ay^bx^by) & 1) === 0;
-    const drawH = (x1,x2,y)=>{ const s=Math.min(x1,x2), e=Math.max(x1,x2); for (let x=s; x<=e; x++) map[y*MAP_W+x]=floorId; };
-    const drawV = (y1,y2,x)=>{ const s=Math.min(y1,y2), e=Math.max(y1,y2); for (let y=s; y<=e; y++) map[y*MAP_W+x]=floorId; };
+    const drawH = (x1,x2,y)=>{
+      const s=Math.min(x1,x2), e=Math.max(x1,x2);
+      for (let x=s; x<=e; x++){
+        map[y*MAP_W+x]=floorId;
+        if (y+1 < MAP_H-1) map[(y+1)*MAP_W+x]=floorId;
+      }
+    };
+    const drawV = (y1,y2,x)=>{
+      const s=Math.min(y1,y2), e=Math.max(y1,y2);
+      for (let y=s; y<=e; y++){
+        map[y*MAP_W+x]=floorId;
+        if (x+1 < MAP_W-1) map[y*MAP_W+(x+1)]=floorId;
+      }
+    };
     if (horizFirst){
       drawH(ax,bx,ay);
       drawV(ay,by,bx);
@@ -435,30 +433,135 @@
   }
 
   function makePlayerSprite(seed, theme){
-    return makeSprite(seed, 12, 14, {
+    const w=12, h=16;
+    const rng = mulberry32(seed);
+    const data = new Uint8Array(w*h);
+    // Palette: 0:void, 1:white, 2:red, 3:black/boots, 4:face
+    const palette = {
       0:'rgba(0,0,0,0)',
       1:'#ffffff',
-      2:'#d43b3b', // santa red
-      3:theme.accentColor
-    }, true);
+      2:'#d43b3b',
+      3:'#1a1a1a',
+      4:'#ffccaa'
+    };
+    const fill = (x,y,W,H,c) => { for(let iy=y;iy<y+H;iy++) for(let ix=x;ix<x+W;ix++) if(ix>=0&&ix<w&&iy>=0&&iy<h) data[iy*w+ix]=c; };
+
+    const mid = Math.floor(w/2);
+    // Legs
+    fill(mid-2, 12, 2, 4, 3);
+    fill(mid+1, 12, 2, 4, 3);
+    // Body
+    fill(mid-3, 7, 7, 5, 2);
+    // Arms
+    fill(mid-4, 7, 1, 4, 2);
+    fill(mid+4, 7, 1, 4, 2);
+    // Belt
+    fill(mid-3, 10, 7, 1, 3);
+    // Trim
+    fill(mid, 7, 1, 5, 1);
+    fill(mid-3, 11, 7, 1, 1);
+    // Head
+    fill(mid-2, 2, 5, 5, 4);
+    // Beard
+    for(let y=5; y<8; y++) for(let x=mid-2; x<=mid+2; x++) if(chance(rng,0.85)) data[y*w+x]=1;
+    // Hat
+    fill(mid-2, 0, 5, 2, 2);
+    fill(mid-3, 2, 7, 1, 1);
+    if(chance(rng,0.5)) data[0*w+mid+3]=1; else data[0*w+mid-3]=1; // pompom
+
+    return createSprite(w, h, data, palette);
   }
 
   function makeEnemySprite(seed, theme){
-    return makeSprite(seed, 12, 14, {
-      0:'rgba(0,0,0,0)',
-      1:'#ffffff',
-      2:theme.wallColor,
-      3:'#e8f0ff'
-    }, true);
+    const rng = mulberry32(seed);
+    // 50% Elf, 50% Snowman
+    const isElf = rng() < 0.5;
+
+    if (isElf) {
+      const w=12, h=14;
+      const data = new Uint8Array(w*h);
+      const palette = {
+        0:'rgba(0,0,0,0)',
+        1:'#ffffff',
+        2:'#2b8f4b', // green
+        3:'#d43b3b', // red details
+        4:theme.wallColor
+      };
+      const fill = (x,y,W,H,c) => { for(let iy=y;iy<y+H;iy++) for(let ix=x;ix<x+W;ix++) if(ix>=0&&ix<w&&iy>=0&&iy<h) data[iy*w+ix]=c; };
+      const mid = Math.floor(w/2);
+      // Elf legs
+      fill(mid-2, 11, 1, 3, 2);
+      fill(mid+1, 11, 1, 3, 2);
+      // Body
+      fill(mid-2, 6, 5, 5, 2);
+      // Head
+      fill(mid-1, 3, 3, 3, 4); // face (using wallColor as dark skin or shadow)
+      // Hat
+      fill(mid-2, 1, 5, 2, 3);
+      data[0*w+mid]=3; // hat tip
+
+      return createSprite(w, h, data, palette);
+    } else {
+      // Snowman
+      const w=12, h=14;
+      const data = new Uint8Array(w*h);
+      const palette = {
+        0:'rgba(0,0,0,0)',
+        1:'#ffffff',
+        2:'#b0c4de', // shadow
+        3:'#d35400', // nose
+        4:'#111111'  // coal
+      };
+      const fill = (x,y,W,H,c) => { for(let iy=y;iy<y+H;iy++) for(let ix=x;ix<x+W;ix++) if(ix>=0&&ix<w&&iy>=0&&iy<h) data[iy*w+ix]=c; };
+      const mid = Math.floor(w/2);
+      // Bottom ball
+      fill(mid-3, 9, 7, 5, 1);
+      // Middle ball
+      fill(mid-2, 5, 5, 4, 1);
+      // Head
+      fill(mid-1, 2, 3, 3, 1);
+      // Nose
+      data[3*w+mid+1] = 3;
+      // Eyes
+      data[2*w+mid] = 4;
+
+      return createSprite(w, h, data, palette);
+    }
   }
 
   function makeBossSprite(seed, theme){
-    return makeSprite(seed, 18, 20, {
+    const rng = mulberry32(seed);
+    const w=20, h=22;
+    const data = new Uint8Array(w*h);
+    const palette = {
       0:'rgba(0,0,0,0)',
       1:'#ffffff',
       2:theme.accentColor,
-      3:'#ffd56a'
-    }, true);
+      3:'#d43b3b', // red
+      4:'#111111'
+    };
+    const fill = (x,y,W,H,c) => { for(let iy=y;iy<y+H;iy++) for(let ix=x;ix<x+W;ix++) if(ix>=0&&ix<w&&iy>=0&&iy<h) data[iy*w+ix]=c; };
+    const mid = Math.floor(w/2);
+
+    // Big Krampus / Bad Santa shape
+    // Legs
+    fill(mid-4, 16, 3, 6, 4);
+    fill(mid+1, 16, 3, 6, 4);
+    // Body
+    fill(mid-5, 8, 10, 9, 3);
+    // Arms
+    fill(mid-7, 9, 2, 7, 3);
+    fill(mid+5, 9, 2, 7, 3);
+    // Head
+    fill(mid-3, 3, 6, 6, 2); // face color
+    // Horns
+    fill(mid-4, 1, 1, 3, 4);
+    fill(mid+3, 1, 1, 3, 4);
+    // Eyes
+    data[5*w+mid-1] = 1;
+    data[5*w+mid+1] = 1;
+
+    return createSprite(w, h, data, palette);
   }
 
   function makePresentSprite(seed){
