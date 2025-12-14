@@ -1,0 +1,1424 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Bad Santa — Roguelike 2D Shooter (Prototype)</title>
+  <style>
+    :root { color-scheme: dark; }
+    html, body { height: 100%; margin: 0; background: #0b0f14; }
+    body { display:flex; align-items:center; justify-content:center; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
+    #wrap { width:min(1100px, 96vw); }
+    #topbar {
+      display:flex; gap:10px; flex-wrap:wrap; align-items:center; justify-content:space-between;
+      color:#d8e1ee; margin: 10px 0 8px;
+    }
+    .pill { padding: 6px 10px; border:1px solid #2a3545; border-radius: 999px; background:#0f1520; }
+    #canvas {
+      width:100%;
+      aspect-ratio: 16/9;
+      max-height: 76vh;
+      background: #070a0f;
+      border: 1px solid #2a3545;
+      border-radius: 18px;
+      box-shadow: 0 10px 40px rgba(0,0,0,.35);
+      image-rendering: pixelated;
+      image-rendering: crisp-edges;
+    }
+    #help {
+      margin: 10px 0 18px;
+      color:#9bb0c9;
+      font-size: 12px;
+      line-height: 1.45;
+    }
+    #help code { color:#d8e1ee; }
+    a { color:#a6d1ff; }
+  </style>
+</head>
+<body>
+  <div id="wrap">
+    <div id="topbar">
+      <div class="pill" id="status">Loading…</div>
+      <div class="pill" id="meta">Meta: —</div>
+      <div class="pill" id="hint">Tip: Press <b>P</b> to pause</div>
+    </div>
+    <canvas id="canvas" width="960" height="540"></canvas>
+    <div id="help">
+      <b>Bad Santa</b> (prototype): procedurally generated houses, permadeath per run, and a persistent skill tree.
+      <br/>
+      <b>Controls</b>: <code>WASD</code> move · <code>IJKL</code> aim · <code>Space</code> shoot · <code>Shift</code> dash · <code>P</code> pause · <code>Enter</code> interact/advance.
+      <br/>
+      <b>Goal</b>: clear the house, steal enough presents (🎁), then defeat the boss guarding the Christmas tree (🎄) to advance.
+      <br/>
+      <b>Meta progression</b>: after death/win you can spend <i>Ornaments</i> (💠) on upgrades that persist across runs.
+      <br/>
+      <span style="opacity:.8">Everything here is code-generated “pixel sprites” (no external assets). This is a solid foundation you can expand: real sprite sheets, more tile variety, better AI, item drops, status effects, and more bosses.</span>
+    </div>
+  </div>
+
+<script>
+(() => {
+  // ------------------------------------------------------------
+  // BAD SANTA — single-file prototype (no external assets)
+  // ------------------------------------------------------------
+
+  const canvas = document.getElementById('canvas');
+  const ctx = canvas.getContext('2d');
+  ctx.imageSmoothingEnabled = false;
+
+  const statusEl = document.getElementById('status');
+  const metaEl = document.getElementById('meta');
+
+  // -----------------------------
+  // Utilities / PRNG
+  // -----------------------------
+  function clamp(v, a, b){ return Math.max(a, Math.min(b, v)); }
+  function lerp(a,b,t){ return a + (b-a)*t; }
+  function randInt(rng, a, b){ return Math.floor(rng()*(b-a+1))+a; }
+  function chance(rng, p){ return rng() < p; }
+  function dist(ax,ay,bx,by){ const dx=ax-bx, dy=ay-by; return Math.hypot(dx,dy); }
+  function norm2(x,y){ const m=Math.hypot(x,y)||1; return [x/m,y/m]; }
+
+  // Mulberry32 — small deterministic RNG
+  function mulberry32(seed){
+    let t = seed >>> 0;
+    return function(){
+      t += 0x6D2B79F5;
+      let r = Math.imul(t ^ (t >>> 15), 1 | t);
+      r ^= r + Math.imul(r ^ (r >>> 7), 61 | r);
+      return ((r ^ (r >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+
+  // -----------------------------
+  // Pixel sprites (procedural)
+  // -----------------------------
+  // We generate small pixel grids (e.g., 12x12) and render them scaled.
+  function makeSprite(seed, w, h, palette, symmetry=true){
+    const rng = mulberry32(seed);
+    const data = new Uint8Array(w*h);
+
+    const mid = Math.floor(w/2);
+    for (let y=0;y<h;y++){
+      for (let x=0;x<w;x++){
+        const xx = symmetry ? (x<mid ? x : w-1-x) : x;
+        const n = rng();
+        let v = 0;
+        // Weighted shapes: center mass + details
+        const cx = mid-0.5, cy = h*0.55;
+        const d = Math.hypot(xx-cx, y-cy);
+        const core = clamp(1 - d/(h*0.65), 0, 1);
+        if (core > 0.25 && n < core*0.9) v = 2;
+        if (core > 0.55 && n < core*0.6) v = 3;
+        if (n < 0.06) v = 1; // sparkle/detail
+        data[y*w + x] = v;
+      }
+    }
+
+    // carve a face window sometimes
+    if (chance(rng, 0.9)){
+      const fx = mid - randInt(rng, 1, 2);
+      const fy = randInt(rng, 3, 5);
+      const fw = randInt(rng, 3, 5);
+      const fh = randInt(rng, 2, 3);
+      for (let y=fy;y<fy+fh;y++) for (let x=fx;x<fx+fw;x++) data[y*w+x]=0;
+      // eyes
+      if (fw>=4 && fh>=2){
+        data[(fy+0)*w + (fx+1)] = 1;
+        data[(fy+0)*w + (fx+fw-2)] = 1;
+      }
+    }
+
+    // return render function
+    return {
+      w,h,data,palette,
+      draw(px,py,scale,frame=0,flip=false){
+        // tiny animation: frame shifts details
+        const wobble = (frame%2===0) ? 0 : 1;
+        for (let y=0;y<h;y++){
+          for (let x=0;x<w;x++){
+            const idx = data[y*w+x];
+            if (!idx) continue;
+            ctx.fillStyle = palette[idx];
+            const xx = flip ? (w-1-x) : x;
+            ctx.fillRect(
+              Math.floor(px + (xx+wobble)*scale),
+              Math.floor(py + y*scale),
+              scale, scale
+            );
+          }
+        }
+      }
+    };
+  }
+
+  // -----------------------------
+  // Input
+  // -----------------------------
+  const keys = new Map();
+  addEventListener('keydown', (e) => {
+    if (["Space","ArrowUp","ArrowDown","ArrowLeft","ArrowRight"].includes(e.code)) e.preventDefault();
+    keys.set(e.code, true);
+  }, {passive:false});
+  addEventListener('keyup', (e) => keys.set(e.code, false));
+
+  function key(code){ return !!keys.get(code); }
+
+  // -----------------------------
+  // Meta progression (persistent)
+  // -----------------------------
+  const META_KEY = 'bad_santa_meta_v1';
+  const defaultMeta = () => ({
+    ornaments: 0,
+    // Skill nodes (level 0..max)
+    skills: {
+      hp: 0,        // +10 max HP per level
+      dmg: 0,       // +8% damage per level
+      spd: 0,       // +6% speed per level
+      reload: 0,    // -6% reload per level
+      dash: 0       // +1 dash charge at max
+    },
+    // last seed for fun
+    lastSeed: 123456
+  });
+
+  function loadMeta(){
+    try {
+      const raw = localStorage.getItem(META_KEY);
+      if (!raw) return defaultMeta();
+      const m = JSON.parse(raw);
+      const base = defaultMeta();
+      return {
+        ornaments: Number.isFinite(m.ornaments) ? m.ornaments : base.ornaments,
+        skills: { ...base.skills, ...(m.skills||{}) },
+        lastSeed: Number.isFinite(m.lastSeed) ? m.lastSeed : base.lastSeed,
+      };
+    } catch { return defaultMeta(); }
+  }
+  function saveMeta(){ localStorage.setItem(META_KEY, JSON.stringify(meta)); }
+  let meta = loadMeta();
+
+  const SKILL_INFO = {
+    hp:     { name: 'Tough Coat',  desc: '+10 Max HP',       max: 8, cost: (lv)=> 6 + lv*6 },
+    dmg:    { name: 'Mean Spirit', desc: '+8% Damage',       max: 8, cost: (lv)=> 8 + lv*7 },
+    spd:    { name: 'Sleigh Boots',desc: '+6% Move Speed',   max: 8, cost: (lv)=> 7 + lv*6 },
+    reload: { name: 'Fast Hands',  desc: '-6% Reload Time',  max: 8, cost: (lv)=> 7 + lv*6 },
+    dash:   { name: 'Dash Charge', desc: 'More dashes',      max: 3, cost: (lv)=> 12 + lv*12 },
+  };
+
+  // -----------------------------
+  // World / level generation
+  // -----------------------------
+  const TILE = 12;               // tile size in pixels
+  const MAP_W = 96;              // tiles
+  const MAP_H = 54;              // tiles
+
+  // tile ids
+  const T = {
+    VOID: 0,
+    FLOOR: 1,
+    WALL: 2,
+    DOOR: 3,
+    RUG: 4,
+    GOLD: 5,
+    MARBLE: 6
+  };
+
+  function levelTheme(level){
+    // Poor -> middle -> rich -> mansion
+    const t = clamp((level-1)/8, 0, 1);
+    const wealthTier = (level<=3) ? 0 : (level<=6) ? 1 : (level<=9) ? 2 : 3;
+    const name = ['Poor House','Suburb House','Rich Villa','Grand Mansion'][wealthTier];
+    // palette changes
+    const floor = wealthTier===0 ? '#1a2430' : wealthTier===1 ? '#182a22' : wealthTier===2 ? '#25203a' : '#1b1b22';
+    const wall  = wealthTier===0 ? '#2b3647' : wealthTier===1 ? '#2b3f36' : wealthTier===2 ? '#3c335b' : '#3a3a49';
+    const accent= wealthTier<=1 ? '#8ad5ff' : wealthTier===2 ? '#ffb86b' : '#e9e2ff';
+
+    // special floors for rich
+    const specialFloor = wealthTier===2 ? T.GOLD : wealthTier===3 ? T.MARBLE : T.FLOOR;
+    const decorRate = lerp(0.05, 0.20, t);
+    const rooms = Math.floor(lerp(10, 22, t));
+
+    return {
+      wealthTier,
+      name,
+      floorColor: floor,
+      wallColor: wall,
+      accentColor: accent,
+      specialFloor,
+      decorRate,
+      targetRooms: rooms,
+      enemyMul: lerp(1.0, 2.0, t),
+      presentMul: lerp(1.0, 1.6, t),
+      bossType: wealthTier,
+    };
+  }
+
+  function carveRoom(map, x,y,w,h, floorId){
+    for (let yy=y; yy<y+h; yy++){
+      for (let xx=x; xx<x+w; xx++){
+        if (xx<=1||yy<=1||xx>=MAP_W-2||yy>=MAP_H-2) continue;
+        map[yy*MAP_W + xx] = floorId;
+      }
+    }
+  }
+
+  function rectsOverlap(a,b){
+    return !(a.x+a.w < b.x || b.x+b.w < a.x || a.y+a.h < b.y || b.y+b.h < a.y);
+  }
+
+  function carveCorridor(map, ax,ay,bx,by, floorId){
+    // L-shaped corridor
+    const horizFirst = ((ax^ay^bx^by) & 1) === 0;
+    const drawH = (x1,x2,y)=>{ const s=Math.min(x1,x2), e=Math.max(x1,x2); for (let x=s; x<=e; x++) map[y*MAP_W+x]=floorId; };
+    const drawV = (y1,y2,x)=>{ const s=Math.min(y1,y2), e=Math.max(y1,y2); for (let y=s; y<=e; y++) map[y*MAP_W+x]=floorId; };
+    if (horizFirst){
+      drawH(ax,bx,ay);
+      drawV(ay,by,bx);
+    } else {
+      drawV(ay,by,ax);
+      drawH(ax,bx,by);
+    }
+  }
+
+  function buildWalls(map){
+    for (let y=1;y<MAP_H-1;y++){
+      for (let x=1;x<MAP_W-1;x++){
+        const i=y*MAP_W+x;
+        if (map[i] !== T.VOID) continue;
+        // any neighbor floor? become wall
+        const n = [i-1,i+1,i-MAP_W,i+MAP_W,i-MAP_W-1,i-MAP_W+1,i+MAP_W-1,i+MAP_W+1];
+        if (n.some(j => map[j]===T.FLOOR||map[j]===T.RUG||map[j]===T.GOLD||map[j]===T.MARBLE||map[j]===T.DOOR)) map[i]=T.WALL;
+      }
+    }
+  }
+
+  function placeDoors(map, rooms, rng){
+    // Put doors where corridors meet rooms (simple heuristic)
+    for (const r of rooms){
+      for (let t=0;t<4;t++){
+        const side = randInt(rng, 0, 3);
+        let x,y;
+        if (side===0){ x = randInt(rng, r.x+1, r.x+r.w-2); y=r.y; }
+        if (side===1){ x = randInt(rng, r.x+1, r.x+r.w-2); y=r.y+r.h-1; }
+        if (side===2){ x = r.x; y = randInt(rng, r.y+1, r.y+r.h-2); }
+        if (side===3){ x = r.x+r.w-1; y = randInt(rng, r.y+1, r.y+r.h-2); }
+        const i=y*MAP_W+x;
+        if (map[i]!==T.FLOOR && map[i]!==T.RUG && map[i]!==T.GOLD && map[i]!==T.MARBLE) continue;
+        // neighbor void on one side and floor on other -> door
+        const nb = [
+          map[i-1], map[i+1], map[i-MAP_W], map[i+MAP_W]
+        ];
+        const floorCount = nb.filter(v => v!==T.VOID && v!==T.WALL).length;
+        const wallCount  = nb.filter(v => v===T.WALL).length;
+        if (floorCount>=2 && wallCount>=1){ map[i]=T.DOOR; }
+      }
+    }
+  }
+
+  function farthestRoom(rooms, from){
+    let best=rooms[0], bestD=-1;
+    for (const r of rooms){
+      const cx=r.x+Math.floor(r.w/2), cy=r.y+Math.floor(r.h/2);
+      const d = (cx-from.x)*(cx-from.x)+(cy-from.y)*(cy-from.y);
+      if (d>bestD){ bestD=d; best=r; }
+    }
+    return best;
+  }
+
+  function genHouse(seed, level){
+    const rng = mulberry32(seed);
+    const theme = levelTheme(level);
+
+    const map = new Uint8Array(MAP_W*MAP_H);
+    map.fill(T.VOID);
+
+    const rooms = [];
+    const attempts = 220;
+    const minSize = 6 + theme.wealthTier;
+    const maxSize = 14 + theme.wealthTier*4;
+
+    for (let i=0;i<attempts && rooms.length<theme.targetRooms;i++){
+      const w = randInt(rng, minSize, maxSize);
+      const h = randInt(rng, minSize, maxSize);
+      const x = randInt(rng, 2, MAP_W-w-3);
+      const y = randInt(rng, 2, MAP_H-h-3);
+      const room = {x,y,w,h};
+      // allow some overlap but keep it light
+      const overlaps = rooms.filter(r => rectsOverlap({x:x-2,y:y-2,w:w+4,h:h+4}, r)).length;
+      if (overlaps>0 && chance(rng, 0.85)) continue;
+      carveRoom(map, x,y,w,h, theme.specialFloor);
+      rooms.push(room);
+    }
+
+    // Connect rooms
+    rooms.sort((a,b)=> (a.x+a.y) - (b.x+b.y));
+    for (let i=1;i<rooms.length;i++){
+      const a=rooms[i-1], b=rooms[i];
+      const ax=a.x+Math.floor(a.w/2), ay=a.y+Math.floor(a.h/2);
+      const bx=b.x+Math.floor(b.w/2), by=b.y+Math.floor(b.h/2);
+      carveCorridor(map, ax,ay,bx,by, theme.specialFloor);
+    }
+
+    // Rugs & decor tiles
+    for (let y=2;y<MAP_H-2;y++){
+      for (let x=2;x<MAP_W-2;x++){
+        const i=y*MAP_W+x;
+        if (map[i]!==theme.specialFloor) continue;
+        if (chance(rng, theme.decorRate)) map[i]=T.RUG;
+      }
+    }
+
+    buildWalls(map);
+    placeDoors(map, rooms, rng);
+
+    // Start in first room; tree + boss in farthest
+    const startRoom = rooms[0] || {x:10,y:10,w:10,h:10};
+    const sPos = { x: (startRoom.x+2)*TILE, y: (startRoom.y+2)*TILE };
+
+    const far = farthestRoom(rooms, {x:startRoom.x, y:startRoom.y});
+    const treeTile = { x: far.x+Math.floor(far.w/2), y: far.y+Math.floor(far.h/2) };
+
+    return { seed, rng, theme, map, rooms, startPos: sPos, treeTile };
+  }
+
+  // -----------------------------
+  // Entities
+  // -----------------------------
+  const ENT = {
+    PLAYER: 'player',
+    ENEMY: 'enemy',
+    BOSS: 'boss',
+    BULLET: 'bullet',
+    PRESENT: 'present',
+    ORNAMENT: 'ornament',
+    TREE: 'tree'
+  };
+
+  function tileAt(world, tx, ty){
+    if (tx<0||ty<0||tx>=MAP_W||ty>=MAP_H) return T.WALL;
+    return world.map[ty*MAP_W+tx];
+  }
+  function solidTile(t){ return t===T.WALL || t===T.VOID; }
+
+  function isSolidAt(world, x,y){
+    const tx = Math.floor(x/TILE), ty=Math.floor(y/TILE);
+    return solidTile(tileAt(world, tx,ty));
+  }
+
+  function collideCircle(world, x,y,r){
+    // test surrounding tiles
+    const minx = Math.floor((x-r)/TILE), maxx=Math.floor((x+r)/TILE);
+    const miny = Math.floor((y-r)/TILE), maxy=Math.floor((y+r)/TILE);
+    for (let ty=miny; ty<=maxy; ty++){
+      for (let tx=minx; tx<=maxx; tx++){
+        const t = tileAt(world, tx,ty);
+        if (!solidTile(t)) continue;
+        const rx=tx*TILE, ry=ty*TILE;
+        const cx=clamp(x, rx, rx+TILE);
+        const cy=clamp(y, ry, ry+TILE);
+        if (dist(x,y,cx,cy) <= r) return true;
+      }
+    }
+    return false;
+  }
+
+  function tryMoveCircle(world, ent, dx,dy){
+    const steps = 4;
+    let okx=true, oky=true;
+    for (let i=0;i<steps;i++){
+      const sx=dx/steps, sy=dy/steps;
+      if (!collideCircle(world, ent.x+sx, ent.y, ent.r)) ent.x += sx; else okx=false;
+      if (!collideCircle(world, ent.x, ent.y+sy, ent.r)) ent.y += sy; else oky=false;
+    }
+    return okx || oky;
+  }
+
+  function makePlayerSprite(seed, theme){
+    return makeSprite(seed, 12, 14, {
+      0:'rgba(0,0,0,0)',
+      1:'#ffffff',
+      2:'#d43b3b', // santa red
+      3:theme.accentColor
+    }, true);
+  }
+
+  function makeEnemySprite(seed, theme){
+    return makeSprite(seed, 12, 14, {
+      0:'rgba(0,0,0,0)',
+      1:'#ffffff',
+      2:theme.wallColor,
+      3:'#e8f0ff'
+    }, true);
+  }
+
+  function makeBossSprite(seed, theme){
+    return makeSprite(seed, 18, 20, {
+      0:'rgba(0,0,0,0)',
+      1:'#ffffff',
+      2:theme.accentColor,
+      3:'#ffd56a'
+    }, true);
+  }
+
+  function makePresentSprite(seed){
+    return makeSprite(seed, 10, 10, {
+      0:'rgba(0,0,0,0)',
+      1:'#ffffff',
+      2:'#27c07d',
+      3:'#d43b3b'
+    }, true);
+  }
+
+  function makeTreeSprite(seed){
+    return makeSprite(seed, 16, 18, {
+      0:'rgba(0,0,0,0)',
+      1:'#ffffff',
+      2:'#27c07d',
+      3:'#ffd56a'
+    }, true);
+  }
+
+  // -----------------------------
+  // Game state
+  // -----------------------------
+  let game = null;
+
+  function applyMetaToBaseStats(){
+    const hpLv = meta.skills.hp|0;
+    const dmgLv = meta.skills.dmg|0;
+    const spdLv = meta.skills.spd|0;
+    const relLv = meta.skills.reload|0;
+    const dashLv= meta.skills.dash|0;
+
+    return {
+      maxHp: 60 + hpLv*10,
+      damageMul: 1 + dmgLv*0.08,
+      speedMul: 1 + spdLv*0.06,
+      reloadMul: 1 - relLv*0.06,
+      dashCharges: 1 + Math.floor(dashLv/2),
+      dashCooldownMul: 1 - dashLv*0.06,
+    };
+  }
+
+  function startNewRun(seed){
+    const rng = mulberry32(seed);
+    const baseStats = applyMetaToBaseStats();
+
+    const run = {
+      seed,
+      rng,
+      level: 1,
+      ornamentsEarnedThisRun: 0,
+      paused: false,
+      mode: 'play', // 'play' | 'between' | 'dead' | 'win'
+      msg: '',
+      time: 0,
+      baseStats,
+      // camera
+      camX: 0,
+      camY: 0,
+      // aim vector
+      aimX: 1,
+      aimY: 0,
+      // kill / loot requirements
+      presentsNeeded: 0,
+      presentsTaken: 0,
+      enemiesRemaining: 0,
+      bossAlive: true,
+      // entities
+      ents: [],
+      bullets: [],
+      particles: [],
+      // world
+      world: null,
+      // UI selection in meta shop
+      shopIndex: 0,
+    };
+
+    loadLevel(run, 1);
+    game = run;
+    updateMetaUI();
+  }
+
+  function addEnt(run, e){ run.ents.push(e); return e; }
+
+  function spawnLevel(run, level){
+    const seed = (run.seed ^ (level*0x9E3779B9)) >>> 0;
+    const world = genHouse(seed, level);
+    const rng = world.rng;
+
+    run.world = world;
+    run.ents = [];
+    run.bullets = [];
+    run.particles = [];
+    run.time = 0;
+    run.msg = '';
+    run.mode = 'play';
+
+    const theme = world.theme;
+
+    // Player
+    const pSprite = makePlayerSprite((seed+1)>>>0, theme);
+    const player = addEnt(run, {
+      type: ENT.PLAYER,
+      x: world.startPos.x,
+      y: world.startPos.y,
+      r: 6,
+      hp: run.baseStats.maxHp,
+      maxHp: run.baseStats.maxHp,
+      speed: 96 * run.baseStats.speedMul,
+      dash: {
+        charges: run.baseStats.dashCharges,
+        maxCharges: run.baseStats.dashCharges,
+        cd: 0,
+        cdMax: 0.9 * (1/run.baseStats.dashCooldownMul)
+      },
+      gun: {
+        reload: 0,
+        reloadMax: 0.18 * run.baseStats.reloadMul,
+        spread: 0.08,
+        bulletSpeed: 320,
+        damage: 12 * run.baseStats.damageMul
+      },
+      invuln: 0,
+      frame: 0,
+      flip: false,
+      sprite: pSprite,
+    });
+    run.player = player;
+
+    // Tree & boss room
+    const treeX = (world.treeTile.x + 0.5) * TILE;
+    const treeY = (world.treeTile.y + 0.5) * TILE;
+    const treeSprite = makeTreeSprite((seed+222)>>>0);
+    addEnt(run, { type: ENT.TREE, x: treeX, y: treeY, r: 10, sprite: treeSprite, frame: 0 });
+
+    // Presents
+    const presentCount = Math.floor((10 + level*3) * theme.presentMul);
+    run.presentsNeeded = Math.max(6, Math.floor(presentCount * 0.65));
+    run.presentsTaken = 0;
+
+    for (let i=0;i<presentCount;i++){
+      const room = world.rooms[randInt(rng, 0, Math.max(0,world.rooms.length-1))] || {x:10,y:10,w:10,h:10};
+      const tx = randInt(rng, room.x+2, room.x+room.w-3);
+      const ty = randInt(rng, room.y+2, room.y+room.h-3);
+      const x=(tx+0.5)*TILE, y=(ty+0.5)*TILE;
+      if (dist(x,y,player.x,player.y)<80) continue;
+      const sprite = makePresentSprite((seed + i*31)>>>0);
+      addEnt(run, { type: ENT.PRESENT, x,y, r: 6, sprite, frame: 0 });
+    }
+
+    // Enemies
+    const baseEnemies = Math.floor((14 + level*6) * theme.enemyMul);
+    run.enemiesRemaining = baseEnemies;
+
+    for (let i=0;i<baseEnemies;i++){
+      const room = world.rooms[randInt(rng, 0, Math.max(0,world.rooms.length-1))] || {x:20,y:20,w:10,h:10};
+      const tx = randInt(rng, room.x+2, room.x+room.w-3);
+      const ty = randInt(rng, room.y+2, room.y+room.h-3);
+      const x=(tx+0.5)*TILE, y=(ty+0.5)*TILE;
+      if (dist(x,y,player.x,player.y)<120) continue;
+      if (dist(x,y,treeX,treeY)<110) continue;
+
+      const sprite = makeEnemySprite((seed + 9000 + i*17)>>>0, theme);
+      addEnt(run, {
+        type: ENT.ENEMY,
+        x,y,
+        r: 6,
+        hp: 20 + level*5,
+        speed: (62 + level*3) * (1 + theme.wealthTier*0.06),
+        atkCd: randInt(rng, 40, 90)/100,
+        atkTimer: randInt(rng, 0, 50)/100,
+        damage: 8 + Math.floor(level*0.6),
+        frame: 0,
+        flip: false,
+        sprite,
+        mood: chance(rng, 0.65) ? 'chase' : 'wander',
+        wx: x,
+        wy: y,
+      });
+    }
+
+    // Boss
+    const bossType = theme.bossType;
+    const bossSeed = (seed ^ 0xB055) >>> 0;
+    const bossSprite = makeBossSprite(bossSeed, theme);
+
+    const boss = addEnt(run, {
+      type: ENT.BOSS,
+      x: treeX + 60,
+      y: treeY,
+      r: 12,
+      hp: 220 + level*60,
+      hpMax: 220 + level*60,
+      speed: 52 + bossType*10,
+      phase: 0,
+      timer: 0,
+      frame: 0,
+      flip: false,
+      sprite: bossSprite,
+      kind: bossType, // 0..3
+    });
+
+    run.boss = boss;
+    run.bossAlive = true;
+
+    // Ensure no starting collisions
+    for (let t=0;t<50;t++){
+      if (!collideCircle(world, player.x, player.y, player.r)) break;
+      player.x += 8; player.y += 8;
+    }
+
+    return run;
+  }
+
+  function loadLevel(run, level){
+    run.level = level;
+    spawnLevel(run, level);
+  }
+
+  function addOrnaments(run, n){
+    run.ornamentsEarnedThisRun += n;
+  }
+
+  // -----------------------------
+  // Combat
+  // -----------------------------
+  function shoot(run){
+    const p = run.player;
+    if (p.gun.reload>0) return;
+
+    const rng = run.rng;
+    const spread = p.gun.spread;
+    const a = Math.atan2(run.aimY, run.aimX) + (rng()*2-1)*spread;
+    const vx = Math.cos(a), vy = Math.sin(a);
+
+    run.bullets.push({
+      x: p.x + vx*10,
+      y: p.y + vy*10,
+      vx: vx * p.gun.bulletSpeed,
+      vy: vy * p.gun.bulletSpeed,
+      r: 2,
+      life: 0.9,
+      dmg: p.gun.damage,
+      from: ENT.PLAYER
+    });
+
+    // muzzle flash particles
+    for (let i=0;i<4;i++){
+      const sp = 70 + run.rng()*90;
+      const aa = a + (run.rng()*2-1)*0.7;
+      run.particles.push({x:p.x+vx*12, y:p.y+vy*12, vx:Math.cos(aa)*sp, vy:Math.sin(aa)*sp, life:0.18});
+    }
+
+    p.gun.reload = p.gun.reloadMax;
+  }
+
+  function enemyShoot(run, e){
+    const p = run.player;
+    const dx = p.x - e.x, dy = p.y - e.y;
+    const [nx,ny] = norm2(dx,dy);
+
+    run.bullets.push({
+      x: e.x + nx*10,
+      y: e.y + ny*10,
+      vx: nx * (220 + run.level*10),
+      vy: ny * (220 + run.level*10),
+      r: 2,
+      life: 1.2,
+      dmg: e.damage,
+      from: ENT.ENEMY
+    });
+  }
+
+  function bossAttack(run, b, dt){
+    const p = run.player;
+    b.timer += dt;
+
+    const dx = p.x - b.x, dy = p.y - b.y;
+    const [nx,ny] = norm2(dx,dy);
+
+    // Boss kinds: 0 poor (charge), 1 suburb (triple shot), 2 rich (ring shot), 3 mansion (summon + laser-ish)
+    if (b.kind===0){
+      // Charge every ~2.0s
+      if (b.timer>2.0){
+        b.timer = 0;
+        b.phase = 1;
+        b.chargeT = 0;
+        b.cx = nx; b.cy = ny;
+      }
+      if (b.phase===1){
+        b.chargeT += dt;
+        const sp = 240;
+        tryMoveCircle(run.world, b, b.cx*sp*dt, b.cy*sp*dt);
+        if (b.chargeT>0.35){ b.phase=0; }
+      }
+    } else if (b.kind===1){
+      if (b.timer>1.2){
+        b.timer=0;
+        const a = Math.atan2(ny,nx);
+        for (const off of [-0.18, 0, 0.18]){
+          const aa=a+off;
+          run.bullets.push({x:b.x, y:b.y, vx:Math.cos(aa)*260, vy:Math.sin(aa)*260, r:2, life:1.4, dmg: 10+run.level, from: ENT.BOSS});
+        }
+      }
+    } else if (b.kind===2){
+      if (b.timer>1.7){
+        b.timer=0;
+        const n = 14;
+        const base = Math.atan2(ny,nx);
+        for (let i=0;i<n;i++){
+          const aa = base + (i/n)*Math.PI*2;
+          run.bullets.push({x:b.x, y:b.y, vx:Math.cos(aa)*210, vy:Math.sin(aa)*210, r:2, life:1.6, dmg: 9+run.level, from: ENT.BOSS});
+        }
+      }
+    } else {
+      // mansion: alternating summon and beam-like burst
+      if (b.timer>2.2){
+        b.timer=0;
+        if (chance(run.rng, 0.5)){
+          // summon 3 guards
+          for (let i=0;i<3;i++){
+            const a = run.rng()*Math.PI*2;
+            const ex = b.x + Math.cos(a)*34;
+            const ey = b.y + Math.sin(a)*34;
+            const sprite = makeEnemySprite(((run.world.seed + 9999 + i*71)>>>0), run.world.theme);
+            addEnt(run, { type: ENT.ENEMY, x:ex, y:ey, r:6, hp: 18+run.level*6, speed: 70+run.level*4, atkCd:0.9, atkTimer:0.2, damage: 8+run.level, frame:0, flip:false, sprite, mood:'chase', wx:ex, wy:ey });
+            run.enemiesRemaining += 1;
+          }
+        } else {
+          // burst volley along aim
+          const a = Math.atan2(ny,nx);
+          for (let k=0;k<6;k++){
+            const aa = a + (run.rng()*2-1)*0.10;
+            run.bullets.push({x:b.x, y:b.y, vx:Math.cos(aa)*(320), vy:Math.sin(aa)*(320), r:2, life:1.05, dmg: 12+run.level, from: ENT.BOSS});
+          }
+        }
+      }
+    }
+
+    // gentle pursue
+    const sp = (b.speed) * (b.hp < b.hpMax*0.5 ? 1.15 : 1.0);
+    tryMoveCircle(run.world, b, nx*sp*dt, ny*sp*dt);
+  }
+
+  function hurt(run, target, dmg){
+    if (target.type===ENT.PLAYER){
+      if (target.invuln>0) return;
+      target.hp -= dmg;
+      target.invuln = 0.28;
+      // hit particles
+      for (let i=0;i<10;i++){
+        const a = run.rng()*Math.PI*2;
+        const sp = 50 + run.rng()*140;
+        run.particles.push({x:target.x, y:target.y, vx:Math.cos(a)*sp, vy:Math.sin(a)*sp, life:0.25});
+      }
+      if (target.hp<=0){
+        run.mode='dead';
+        run.msg='You died. (Permadeath)';
+      }
+    } else {
+      target.hp -= dmg;
+      for (let i=0;i<6;i++){
+        const a = run.rng()*Math.PI*2;
+        const sp = 40 + run.rng()*120;
+        run.particles.push({x:target.x, y:target.y, vx:Math.cos(a)*sp, vy:Math.sin(a)*sp, life:0.22});
+      }
+      if (target.hp<=0){
+        // drop ornaments
+        const drop = target.type===ENT.BOSS ? (10 + run.level*3) : 1;
+        addOrnaments(run, drop);
+        // also drop 0-2 present shards
+        const n = target.type===ENT.BOSS ? 0 : (chance(run.rng, 0.25) ? 1 : 0);
+        for (let i=0;i<n;i++){
+          addEnt(run, { type: ENT.ORNAMENT, x:target.x+(run.rng()*2-1)*8, y:target.y+(run.rng()*2-1)*8, r:5, life: 8 });
+        }
+
+        if (target.type===ENT.ENEMY) run.enemiesRemaining = Math.max(0, run.enemiesRemaining-1);
+        if (target.type===ENT.BOSS) run.bossAlive = false;
+
+        target.dead = true;
+      }
+    }
+  }
+
+  // -----------------------------
+  // Update loop
+  // -----------------------------
+  let last = performance.now();
+
+  function update(){
+    const now = performance.now();
+    const dt = Math.min(0.033, (now-last)/1000);
+    last = now;
+
+    if (!game){ requestAnimationFrame(update); return; }
+
+    if (key('KeyP')){ // edge detect
+      if (!game._pDown){
+        game._pDown = true;
+        game.paused = !game.paused;
+      }
+    } else game._pDown = false;
+
+    if (game.paused){
+      render(game);
+      requestAnimationFrame(update);
+      return;
+    }
+
+    step(game, dt);
+    render(game);
+
+    requestAnimationFrame(update);
+  }
+
+  function step(run, dt){
+    run.time += dt;
+
+    // Global mode transitions
+    if (run.mode==='dead' || run.mode==='win'){
+      // allow enter to go to meta shop / restart
+      if (key('Enter') && !run._enterDown){
+        run._enterDown = true;
+        // bank ornaments and go to shop screen
+        meta.ornaments += run.ornamentsEarnedThisRun;
+        meta.lastSeed = run.seed;
+        saveMeta();
+        run.ornamentsEarnedThisRun = 0;
+        run.mode = 'between';
+        run.shopIndex = 0;
+      }
+      if (!key('Enter')) run._enterDown = false;
+      return;
+    }
+
+    if (run.mode==='between'){
+      stepShop(run, dt);
+      return;
+    }
+
+    // Play mode
+    const world = run.world;
+    const p = run.player;
+
+    // Aim with IJKL
+    let ax=0, ay=0;
+    if (key('KeyI')) ay -= 1;
+    if (key('KeyK')) ay += 1;
+    if (key('KeyJ')) ax -= 1;
+    if (key('KeyL')) ax += 1;
+    if (ax!==0 || ay!==0){
+      const [nx,ny] = norm2(ax,ay);
+      run.aimX = nx; run.aimY = ny;
+      p.flip = (nx<0);
+    }
+
+    // Movement
+    let mx=0,my=0;
+    if (key('KeyW')) my -= 1;
+    if (key('KeyS')) my += 1;
+    if (key('KeyA')) mx -= 1;
+    if (key('KeyD')) mx += 1;
+
+    if (mx!==0||my!==0){
+      const [nx,ny]=norm2(mx,my);
+      tryMoveCircle(world, p, nx*p.speed*dt, ny*p.speed*dt);
+      p.frame = (p.frame + dt*10) % 4;
+      if (nx!==0) p.flip = nx<0;
+    } else {
+      p.frame = (p.frame + dt*2) % 4;
+    }
+
+    // Dash
+    p.dash.cd = Math.max(0, p.dash.cd - dt);
+    if (p.dash.charges < p.dash.maxCharges && p.dash.cd<=0){
+      // recharge
+      p.dash.charges += 1;
+      p.dash.cd = p.dash.cdMax;
+    }
+
+    if (key('ShiftLeft') || key('ShiftRight')){
+      if (!run._shiftDown){
+        run._shiftDown = true;
+        if (p.dash.charges>0 && (mx!==0||my!==0)){
+          p.dash.charges -= 1;
+          const [nx,ny]=norm2(mx,my);
+          for (let i=0;i<10;i++){
+            tryMoveCircle(world, p, nx*22, ny*22);
+          }
+          p.invuln = Math.max(p.invuln, 0.20);
+        }
+      }
+    } else run._shiftDown = false;
+
+    // Shooting
+    p.gun.reload = Math.max(0, p.gun.reload - dt);
+    if (key('Space')){
+      shoot(run);
+    }
+
+    p.invuln = Math.max(0, p.invuln - dt);
+
+    // Bullets
+    for (const b of run.bullets){
+      b.x += b.vx*dt;
+      b.y += b.vy*dt;
+      b.life -= dt;
+      if (collideCircle(world, b.x,b.y,b.r)) b.life = 0;
+
+      // hit entities
+      if (b.life>0){
+        for (const e of run.ents){
+          if (e.dead) continue;
+          if (b.from===ENT.PLAYER && (e.type===ENT.ENEMY || e.type===ENT.BOSS)){
+            if (dist(b.x,b.y,e.x,e.y) <= (b.r+e.r)){
+              hurt(run, e, b.dmg);
+              b.life=0;
+              break;
+            }
+          }
+          if ((b.from===ENT.ENEMY || b.from===ENT.BOSS) && e.type===ENT.PLAYER){
+            if (dist(b.x,b.y,e.x,e.y) <= (b.r+e.r)){
+              hurt(run, e, b.dmg);
+              b.life=0;
+              break;
+            }
+          }
+        }
+      }
+    }
+    run.bullets = run.bullets.filter(b => b.life>0);
+
+    // Enemies AI
+    for (const e of run.ents){
+      if (e.dead) continue;
+      if (e.type===ENT.ENEMY){
+        e.frame = (e.frame + dt*6) % 4;
+
+        const d = dist(e.x,e.y,p.x,p.y);
+        if (d < 220){ e.mood='chase'; }
+        if (d > 340 && chance(run.rng, 0.01)) e.mood='wander';
+
+        if (e.mood==='wander'){
+          if (dist(e.x,e.y,e.wx,e.wy) < 12 || chance(run.rng, 0.01)){
+            e.wx = e.x + (run.rng()*2-1)*140;
+            e.wy = e.y + (run.rng()*2-1)*140;
+          }
+          const [nx,ny]=norm2(e.wx-e.x, e.wy-e.y);
+          tryMoveCircle(world, e, nx*e.speed*dt, ny*e.speed*dt);
+          if (nx!==0) e.flip = nx<0;
+        } else {
+          const [nx,ny]=norm2(p.x-e.x, p.y-e.y);
+          tryMoveCircle(world, e, nx*e.speed*dt, ny*e.speed*dt);
+          if (nx!==0) e.flip = nx<0;
+
+          e.atkTimer -= dt;
+          if (e.atkTimer<=0 && d<260){
+            e.atkTimer = e.atkCd;
+            enemyShoot(run, e);
+          }
+        }
+      }
+
+      if (e.type===ENT.BOSS){
+        e.frame = (e.frame + dt*4) % 4;
+        bossAttack(run, e, dt);
+      }
+
+      if (e.type===ENT.ORNAMENT){
+        e.life -= dt;
+        // magnet to player
+        const d = dist(e.x,e.y,p.x,p.y);
+        if (d<120){
+          const [nx,ny]=norm2(p.x-e.x, p.y-e.y);
+          e.x += nx*180*dt;
+          e.y += ny*180*dt;
+        }
+        if (d < (p.r+e.r+2)){
+          addOrnaments(run, 1);
+          e.dead = true;
+        }
+      }
+
+      if (e.type===ENT.PRESENT){
+        e.frame = (e.frame + dt*3) % 4;
+        if (dist(e.x,e.y,p.x,p.y) < (p.r+e.r+2)){
+          run.presentsTaken += 1;
+          addOrnaments(run, 1);
+          e.dead = true;
+        }
+      }
+
+      if (e.type===ENT.TREE){
+        e.frame = (e.frame + dt*2) % 4;
+        // interaction if conditions met
+        if (dist(e.x,e.y,p.x,p.y) < (p.r+e.r+8)){
+          const okPresents = run.presentsTaken >= run.presentsNeeded;
+          const okEnemies  = run.enemiesRemaining <= 0;
+          const okBoss     = !run.bossAlive;
+          if (okPresents && okEnemies && okBoss){
+            run.msg = 'The tree is yours. Press Enter to go to the next house.';
+            if (key('Enter') && !run._enterDown){
+              run._enterDown = true;
+              run.level += 1;
+              // win condition at level 12
+              if (run.level>12){
+                run.mode='win';
+                run.msg='You cleared the grand mansion. Bad Santa wins. (Enter)';
+              } else {
+                loadLevel(run, run.level);
+              }
+            }
+          } else {
+            const parts = [];
+            if (!okPresents) parts.push(`steal presents ${run.presentsTaken}/${run.presentsNeeded}`);
+            if (!okEnemies) parts.push(`clear enemies ${run.enemiesRemaining}`);
+            if (!okBoss) parts.push('defeat the boss');
+            run.msg = 'Exit locked: ' + parts.join(' · ');
+          }
+        }
+      }
+    }
+
+    if (!key('Enter')) run._enterDown = false;
+
+    // Particles
+    for (const q of run.particles){
+      q.x += q.vx*dt;
+      q.y += q.vy*dt;
+      q.vx *= (1 - dt*7);
+      q.vy *= (1 - dt*7);
+      q.life -= dt;
+    }
+    run.particles = run.particles.filter(q => q.life>0);
+
+    // Remove dead
+    run.ents = run.ents.filter(e => !e.dead);
+
+    // If player died, convert to dead mode
+    if (run.player.hp<=0 && run.mode==='play'){
+      run.mode='dead';
+      run.msg='You died. (Enter)';
+    }
+
+    // Camera follows player
+    run.camX = lerp(run.camX, p.x - canvas.width/2, 0.12);
+    run.camY = lerp(run.camY, p.y - canvas.height/2, 0.12);
+    run.camX = clamp(run.camX, 0, MAP_W*TILE - canvas.width);
+    run.camY = clamp(run.camY, 0, MAP_H*TILE - canvas.height);
+
+    updateMetaUI();
+  }
+
+  function updateMetaUI(){
+    metaEl.textContent = `Meta 💠 ${meta.ornaments} | Skills: HP ${meta.skills.hp} · DMG ${meta.skills.dmg} · SPD ${meta.skills.spd} · RLD ${meta.skills.reload} · DASH ${meta.skills.dash}`;
+  }
+
+  // -----------------------------
+  // Meta shop / between-runs screen
+  // -----------------------------
+  const SHOP_KEYS = ['hp','dmg','spd','reload','dash'];
+
+  function stepShop(run, dt){
+    // navigation
+    if ((key('ArrowUp') || key('KeyW')) && !run._navUp){
+      run._navUp=true;
+      run.shopIndex = (run.shopIndex - 1 + SHOP_KEYS.length) % SHOP_KEYS.length;
+    }
+    if (!(key('ArrowUp')||key('KeyW'))) run._navUp=false;
+
+    if ((key('ArrowDown') || key('KeyS')) && !run._navDown){
+      run._navDown=true;
+      run.shopIndex = (run.shopIndex + 1) % SHOP_KEYS.length;
+    }
+    if (!(key('ArrowDown')||key('KeyS'))) run._navDown=false;
+
+    if (key('Enter') && !run._buyDown){
+      run._buyDown=true;
+      const k = SHOP_KEYS[run.shopIndex];
+      const lv = meta.skills[k]||0;
+      const info = SKILL_INFO[k];
+      if (lv < info.max){
+        const cost = info.cost(lv);
+        if (meta.ornaments >= cost){
+          meta.ornaments -= cost;
+          meta.skills[k] = lv+1;
+          saveMeta();
+          updateMetaUI();
+        }
+      }
+    }
+    if (!key('Enter')) run._buyDown=false;
+
+    if (key('KeyR') && !run._rDown){
+      run._rDown=true;
+      // Start a new run from scratch (fresh permadeath run)
+      const newSeed = (Math.floor(Math.random()*1e9) ^ (meta.lastSeed||123456)) >>> 0;
+      meta.lastSeed = newSeed;
+      saveMeta();
+      startNewRun(newSeed);
+    }
+    if (!key('KeyR')) run._rDown=false;
+
+    // Also allow quick restart by Space
+    if (key('Space') && !run._spaceDown){
+      run._spaceDown=true;
+      const newSeed = (Math.floor(Math.random()*1e9) ^ (meta.lastSeed||123456)) >>> 0;
+      meta.lastSeed = newSeed;
+      saveMeta();
+      startNewRun(newSeed);
+    }
+    if (!key('Space')) run._spaceDown=false;
+  }
+
+  // -----------------------------
+  // Rendering
+  // -----------------------------
+  function render(run){
+    const world = run.world;
+    const theme = world?.theme;
+
+    ctx.clearRect(0,0,canvas.width, canvas.height);
+
+    if (!run.world){
+      ctx.fillStyle = '#d8e1ee';
+      ctx.fillText('Loading world…', 20, 30);
+      return;
+    }
+
+    // background
+    ctx.fillStyle = '#070a0f';
+    ctx.fillRect(0,0,canvas.width, canvas.height);
+
+    // map
+    const camX = run.camX, camY = run.camY;
+    const minTx = Math.floor(camX/TILE)-1;
+    const minTy = Math.floor(camY/TILE)-1;
+    const maxTx = Math.floor((camX+canvas.width)/TILE)+1;
+    const maxTy = Math.floor((camY+canvas.height)/TILE)+1;
+
+    for (let ty=minTy; ty<=maxTy; ty++){
+      for (let tx=minTx; tx<=maxTx; tx++){
+        if (tx<0||ty<0||tx>=MAP_W||ty>=MAP_H) continue;
+        const t = tileAt(world, tx,ty);
+        const x = tx*TILE - camX;
+        const y = ty*TILE - camY;
+
+        if (t===T.VOID){
+          // nothing
+        } else if (t===T.WALL){
+          ctx.fillStyle = theme.wallColor;
+          ctx.fillRect(x,y,TILE,TILE);
+          // subtle highlight
+          ctx.fillStyle = 'rgba(255,255,255,0.03)';
+          ctx.fillRect(x,y,TILE,2);
+        } else {
+          if (t===T.FLOOR) ctx.fillStyle = theme.floorColor;
+          if (t===T.RUG) ctx.fillStyle = 'rgba(214,59,59,0.22)';
+          if (t===T.GOLD) ctx.fillStyle = 'rgba(255,213,106,0.18)';
+          if (t===T.MARBLE) ctx.fillStyle = 'rgba(233,226,255,0.16)';
+          if (t===T.DOOR) ctx.fillStyle = 'rgba(255,255,255,0.09)';
+          ctx.fillRect(x,y,TILE,TILE);
+        }
+      }
+    }
+
+    // particles (behind entities)
+    for (const q of run.particles){
+      const x=q.x-camX, y=q.y-camY;
+      ctx.fillStyle = 'rgba(255,255,255,' + clamp(q.life*5,0,1) + ')';
+      ctx.fillRect(Math.floor(x), Math.floor(y), 2, 2);
+    }
+
+    // entities
+    for (const e of run.ents){
+      const x=e.x - camX;
+      const y=e.y - camY;
+
+      if (e.type===ENT.PLAYER || e.type===ENT.ENEMY || e.type===ENT.BOSS){
+        const scale = e.type===ENT.BOSS ? 2 : 2;
+        const px = Math.floor(x - (e.sprite.w*scale)/2);
+        const py = Math.floor(y - (e.sprite.h*scale)/2);
+        // invuln flicker
+        if (e.type===ENT.PLAYER && e.invuln>0 && (Math.floor(run.time*20)%2===0)){
+          ctx.globalAlpha = 0.35;
+        }
+        e.sprite.draw(px,py,scale,Math.floor(e.frame)%2,e.flip);
+        ctx.globalAlpha = 1;
+
+        // HP bars for boss
+        if (e.type===ENT.BOSS){
+          const w=120, h=6;
+          const bx = 16, by = 14;
+          ctx.fillStyle = 'rgba(0,0,0,0.55)';
+          ctx.fillRect(bx,by,w,h);
+          ctx.fillStyle = theme.accentColor;
+          ctx.fillRect(bx,by,w*(e.hp/e.hpMax),h);
+          ctx.strokeStyle = 'rgba(255,255,255,0.15)';
+          ctx.strokeRect(bx,by,w,h);
+        }
+      }
+
+      if (e.type===ENT.PRESENT){
+        const scale=2;
+        e.sprite.draw(Math.floor(x-(e.sprite.w*scale)/2), Math.floor(y-(e.sprite.h*scale)/2), scale, Math.floor(e.frame)%2, false);
+      }
+
+      if (e.type===ENT.TREE){
+        const scale=2;
+        e.sprite.draw(Math.floor(x-(e.sprite.w*scale)/2), Math.floor(y-(e.sprite.h*scale)/2), scale, Math.floor(e.frame)%2, false);
+        // glow
+        ctx.fillStyle = 'rgba(255,213,106,0.10)';
+        ctx.beginPath();
+        ctx.arc(x,y,22+Math.sin(run.time*2)*2,0,Math.PI*2);
+        ctx.fill();
+      }
+
+      if (e.type===ENT.ORNAMENT){
+        ctx.fillStyle = 'rgba(138,213,255,0.9)';
+        ctx.fillRect(Math.floor(x-2), Math.floor(y-2), 4, 4);
+      }
+    }
+
+    // bullets
+    for (const b of run.bullets){
+      const x=b.x-camX, y=b.y-camY;
+      ctx.fillStyle = (b.from===ENT.PLAYER) ? 'rgba(255,255,255,0.95)' : 'rgba(255,184,107,0.9)';
+      ctx.fillRect(Math.floor(x-1), Math.floor(y-1), 2, 2);
+    }
+
+    // HUD
+    const p = run.player;
+    const hpW=180, hpH=8;
+    const hx=16, hy=canvas.height-22;
+    ctx.fillStyle = 'rgba(0,0,0,0.55)';
+    ctx.fillRect(hx,hy,hpW,hpH);
+    ctx.fillStyle = 'rgba(214,59,59,0.95)';
+    ctx.fillRect(hx,hy,hpW*clamp(p.hp/p.maxHp,0,1),hpH);
+    ctx.strokeStyle = 'rgba(255,255,255,0.15)';
+    ctx.strokeRect(hx,hy,hpW,hpH);
+
+    // dash charges
+    const dx = hx + hpW + 12;
+    for (let i=0;i<p.dash.maxCharges;i++){
+      ctx.fillStyle = (i<p.dash.charges) ? 'rgba(138,213,255,0.95)' : 'rgba(138,213,255,0.20)';
+      ctx.fillRect(dx+i*10, hy, 8, 8);
+    }
+
+    ctx.fillStyle = 'rgba(216,225,238,0.95)';
+    ctx.font = '12px ui-monospace, monospace';
+    ctx.fillText(`Level ${run.level} — ${theme.name}`, 16, 18);
+    ctx.fillText(`🎁 ${run.presentsTaken}/${run.presentsNeeded}  |  Enemies ${run.enemiesRemaining}  |  Boss ${run.bossAlive?'Alive':'Dead'}  |  Run 💠 ${run.ornamentsEarnedThisRun}`, 16, 36);
+
+    // Aim indicator
+    const ax = p.x + run.aimX*22 - camX;
+    const ay = p.y + run.aimY*22 - camY;
+    ctx.fillStyle = 'rgba(255,255,255,0.22)';
+    ctx.beginPath();
+    ctx.arc(ax,ay,6,0,Math.PI*2);
+    ctx.fill();
+
+    // Message
+    if (run.msg){
+      ctx.fillStyle = 'rgba(0,0,0,0.55)';
+      ctx.fillRect(14, canvas.height-56, canvas.width-28, 28);
+      ctx.fillStyle = 'rgba(216,225,238,0.95)';
+      ctx.fillText(run.msg, 24, canvas.height-37);
+    }
+
+    // Overlays
+    if (run.paused){
+      overlay('PAUSED', 'Press P to resume');
+    }
+
+    if (run.mode==='dead'){
+      overlay('PERMA-DEATH', 'Press Enter to bank 💠 and open Skill Tree');
+    }
+
+    if (run.mode==='win'){
+      overlay('YOU WON', 'Press Enter to bank 💠 and open Skill Tree');
+    }
+
+    if (run.mode==='between'){
+      renderShop(run);
+    }
+
+    // top status
+    statusEl.textContent = `${run.mode==='between' ? 'Skill Tree' : 'Run'} | Seed ${run.seed} | Level ${run.level} | ${run.paused ? 'Paused' : 'Active'}`;
+  }
+
+  function overlay(title, subtitle){
+    ctx.fillStyle='rgba(0,0,0,0.62)';
+    ctx.fillRect(0,0,canvas.width, canvas.height);
+    ctx.fillStyle='rgba(216,225,238,0.95)';
+    ctx.font='28px ui-monospace, monospace';
+    ctx.fillText(title, 40, 120);
+    ctx.font='14px ui-monospace, monospace';
+    ctx.fillText(subtitle, 40, 150);
+  }
+
+  function renderShop(run){
+    ctx.fillStyle='rgba(0,0,0,0.72)';
+    ctx.fillRect(0,0,canvas.width, canvas.height);
+
+    ctx.fillStyle='rgba(216,225,238,0.95)';
+    ctx.font='24px ui-monospace, monospace';
+    ctx.fillText('Skill Tree (persistent across runs)', 40, 70);
+
+    ctx.font='14px ui-monospace, monospace';
+    ctx.fillText(`Meta currency: 💠 ${meta.ornaments}`, 40, 96);
+    ctx.fillText('Up/Down to select. Enter to buy. Press Space (or R) to start a NEW run.', 40, 116);
+
+    const x=50, y=150;
+    const rowH=44;
+
+    for (let i=0;i<SHOP_KEYS.length;i++){
+      const k = SHOP_KEYS[i];
+      const info = SKILL_INFO[k];
+      const lv = meta.skills[k]||0;
+      const selected = (i===run.shopIndex);
+
+      ctx.fillStyle = selected ? 'rgba(138,213,255,0.16)' : 'rgba(255,255,255,0.06)';
+      ctx.fillRect(x, y+i*rowH, canvas.width-100, rowH-8);
+
+      ctx.fillStyle = 'rgba(216,225,238,0.95)';
+      ctx.font='16px ui-monospace, monospace';
+      ctx.fillText(`${selected?'>':''} ${info.name}  (Lv ${lv}/${info.max})`, x+12, y+i*rowH+22);
+
+      ctx.font='12px ui-monospace, monospace';
+      ctx.fillStyle = 'rgba(155,176,201,0.95)';
+      ctx.fillText(info.desc, x+12, y+i*rowH+38);
+
+      const canUp = lv < info.max;
+      const cost = canUp ? info.cost(lv) : null;
+      const affordable = canUp && meta.ornaments>=cost;
+
+      ctx.font='12px ui-monospace, monospace';
+      ctx.fillStyle = canUp ? (affordable ? 'rgba(255,213,106,0.95)' : 'rgba(255,255,255,0.35)') : 'rgba(255,255,255,0.25)';
+      ctx.fillText(canUp ? `Cost: 💠 ${cost}` : 'MAXED', canvas.width-180, y+i*rowH+26);
+    }
+
+    // flavor text
+    ctx.fillStyle='rgba(155,176,201,0.95)';
+    ctx.font='12px ui-monospace, monospace';
+    ctx.fillText('Lore: Every run you die, but the North Pole black market remembers your upgrades.', 40, canvas.height-48);
+  }
+
+  // -----------------------------
+  // Boot
+  // -----------------------------
+  function boot(){
+    // First seed: either meta last seed, or random
+    const seed = (meta.lastSeed && Number.isFinite(meta.lastSeed)) ? (meta.lastSeed>>>0) : ((Math.random()*1e9)|0)>>>0;
+    startNewRun(seed);
+    update();
+  }
+
+  boot();
+
+})();
+</script>
+</body>
+</html>
