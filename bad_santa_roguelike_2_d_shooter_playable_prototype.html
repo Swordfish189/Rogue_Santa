@@ -211,32 +211,75 @@
   };
 
   function levelTheme(level){
-    // Poor -> middle -> rich -> mansion
-    const t = clamp((level-1)/8, 0, 1);
-    const wealthTier = (level<=3) ? 0 : (level<=6) ? 1 : (level<=9) ? 2 : 3;
-    const name = ['Poor House','Suburb House','Rich Villa','Grand Mansion'][wealthTier];
-    // palette changes
-    const floor = wealthTier===0 ? '#1a2430' : wealthTier===1 ? '#182a22' : wealthTier===2 ? '#25203a' : '#1b1b22';
-    const wall  = wealthTier===0 ? '#2b3647' : wealthTier===1 ? '#2b3f36' : wealthTier===2 ? '#3c335b' : '#3a3a49';
-    const accent= wealthTier<=1 ? '#8ad5ff' : wealthTier===2 ? '#ffb86b' : '#e9e2ff';
+    // 5 Distinct Biomes
+    // 1-2: Chinatown (Poor)
+    // 3-5: Doomer Slavic Flat (Poor+)
+    // 6-8: Midtown House (Middle)
+    // 9-11: Dusk Hills Condo (Upper)
+    // 12+: Rock Cliff Mansion (Rich)
 
-    // special floors for rich
-    const specialFloor = wealthTier===2 ? T.GOLD : wealthTier===3 ? T.MARBLE : T.FLOOR;
-    const decorRate = lerp(0.05, 0.20, t);
-    const rooms = Math.floor(lerp(10, 22, t));
+    let wealthTier = 0;
+    let biome = 'chinatown';
+    let name = 'Chinatown Slum';
+    let floor = '#1a1818';
+    let wall = '#3e2723';
+    let accent = '#d32f2f'; // red lanterns
+    let special = T.FLOOR;
+
+    if (level <= 2) {
+        biome = 'chinatown';
+        name = 'Chinatown Slum';
+        floor = '#211a1a';
+        wall = '#4e342e';
+        accent = '#e53935';
+        wealthTier = 0;
+    } else if (level <= 5) {
+        biome = 'slavic';
+        name = 'Slavic Doomer Flat';
+        floor = '#263238'; // concrete
+        wall = '#37474f';
+        accent = '#78909c';
+        wealthTier = 1;
+    } else if (level <= 8) {
+        biome = 'midtown';
+        name = 'Midtown House';
+        floor = '#3e2723'; // wood
+        wall = '#5d4037';
+        accent = '#ffecb3';
+        wealthTier = 2;
+    } else if (level <= 11) {
+        biome = 'dusk';
+        name = 'Dusk Hills Condo';
+        floor = '#eceff1'; // white/clean
+        wall = '#cfd8dc';
+        accent = '#00bcd4'; // cyan
+        wealthTier = 3;
+    } else {
+        biome = 'mansion';
+        name = 'Rock Cliff Mansion';
+        floor = '#212121'; // dark marble
+        wall = '#263238';
+        accent = '#ffd700'; // gold
+        special = T.MARBLE;
+        wealthTier = 4;
+    }
+
+    // linear difficulty curve
+    const t = clamp((level-1)/12, 0, 1);
 
     return {
       wealthTier,
+      biome,
       name,
       floorColor: floor,
       wallColor: wall,
       accentColor: accent,
-      specialFloor,
-      decorRate,
-      targetRooms: rooms,
-      enemyMul: lerp(1.0, 2.0, t),
-      presentMul: lerp(1.0, 1.6, t),
-      bossType: wealthTier,
+      specialFloor: special,
+      decorRate: lerp(0.05, 0.25, t),
+      targetRooms: Math.floor(lerp(12, 28, t)),
+      enemyMul: lerp(0.8, 1.8, t),
+      presentMul: lerp(0.8, 1.4, t),
+      bossType: wealthTier, // 0..4
     };
   }
 
@@ -390,7 +433,10 @@
     BULLET: 'bullet',
     PRESENT: 'present',
     ORNAMENT: 'ornament',
-    TREE: 'tree'
+    TREE: 'tree',
+    PROP: 'prop',
+    POTION: 'potion',
+    WEAPON: 'weapon'
   };
 
   function tileAt(world, tx, ty){
@@ -404,7 +450,7 @@
     return solidTile(tileAt(world, tx,ty));
   }
 
-  function collideCircle(world, x,y,r){
+  function collideCircle(world, x,y,r, ents=[]){
     // test surrounding tiles
     const minx = Math.floor((x-r)/TILE), maxx=Math.floor((x+r)/TILE);
     const miny = Math.floor((y-r)/TILE), maxy=Math.floor((y+r)/TILE);
@@ -418,16 +464,23 @@
         if (dist(x,y,cx,cy) <= r) return true;
       }
     }
+    // test props
+    for (const e of ents){
+      if (e.type === ENT.PROP && !e.dead){
+        // props are solid circles
+        if (dist(x,y,e.x,e.y) <= (r+e.r)) return true;
+      }
+    }
     return false;
   }
 
-  function tryMoveCircle(world, ent, dx,dy){
+  function tryMoveCircle(world, ent, dx,dy, ents=[]){
     const steps = 4;
     let okx=true, oky=true;
     for (let i=0;i<steps;i++){
       const sx=dx/steps, sy=dy/steps;
-      if (!collideCircle(world, ent.x+sx, ent.y, ent.r)) ent.x += sx; else okx=false;
-      if (!collideCircle(world, ent.x, ent.y+sy, ent.r)) ent.y += sy; else oky=false;
+      if (!collideCircle(world, ent.x+sx, ent.y, ent.r, ents)) ent.x += sx; else okx=false;
+      if (!collideCircle(world, ent.x, ent.y+sy, ent.r, ents)) ent.y += sy; else oky=false;
     }
     return okx || oky;
   }
@@ -474,94 +527,128 @@
 
   function makeEnemySprite(seed, theme){
     const rng = mulberry32(seed);
-    // 50% Elf, 50% Snowman
-    const isElf = rng() < 0.5;
+    const w=12, h=14;
+    const data = new Uint8Array(w*h);
+    const fill = (x,y,W,H,c) => { for(let iy=y;iy<y+H;iy++) for(let ix=x;ix<x+W;ix++) if(ix>=0&&ix<w&&iy>=0&&iy<h) data[iy*w+ix]=c; };
+    const mid = Math.floor(w/2);
 
-    if (isElf) {
-      const w=12, h=14;
-      const data = new Uint8Array(w*h);
-      const palette = {
-        0:'rgba(0,0,0,0)',
-        1:'#ffffff',
-        2:'#2b8f4b', // green
-        3:'#d43b3b', // red details
-        4:theme.wallColor
-      };
-      const fill = (x,y,W,H,c) => { for(let iy=y;iy<y+H;iy++) for(let ix=x;ix<x+W;ix++) if(ix>=0&&ix<w&&iy>=0&&iy<h) data[iy*w+ix]=c; };
-      const mid = Math.floor(w/2);
-      // Elf legs
-      fill(mid-2, 11, 1, 3, 2);
-      fill(mid+1, 11, 1, 3, 2);
-      // Body
-      fill(mid-2, 6, 5, 5, 2);
-      // Head
-      fill(mid-1, 3, 3, 3, 4); // face (using wallColor as dark skin or shadow)
-      // Hat
-      fill(mid-2, 1, 5, 2, 3);
-      data[0*w+mid]=3; // hat tip
+    // Biome specific palettes and shapes
+    if (theme.biome === 'chinatown') {
+        const type = rng() < 0.6 ? 0 : 1; // 0=Thug, 1=Tosser
+        const palette = {0:'rgba(0,0,0,0)', 1:'#ffcc80', 2:'#d32f2f', 3:'#212121', 4:'#fbc02d'};
+        // Thug: headband, tank top
+        fill(mid-2,10,2,4,3); fill(mid+1,10,2,4,3); // legs
+        fill(mid-3,6,7,4,2); // shirt
+        fill(mid-1,2,3,4,1); // head
+        fill(mid-2,2,5,1,3); // headband
+        if(type===1) fill(mid-4,7,2,2,4); // bomb in hand
+        return {sprite:createSprite(w,h,data,palette), ai: type===0 ? 'rush' : 'bomb'};
 
-      return createSprite(w, h, data, palette);
+    } else if (theme.biome === 'slavic') {
+        const type = rng() < 0.6 ? 0 : 1; // 0=Gopnik, 1=Bear
+        if(type===0){
+            const palette = {0:'rgba(0,0,0,0)', 1:'#ffd54f', 2:'#1565c0', 3:'#eceff1', 4:'#455a64'};
+            fill(mid-2,10,2,4,2); fill(mid+1,10,2,4,2); // trackpants
+            fill(mid-3,6,7,4,2); // trackjacket
+            fill(mid,6,1,8,3); // stripe
+            fill(mid-1,2,3,4,1); // head
+            fill(mid-2,1,5,2,4); // flat cap
+            return {sprite:createSprite(w,h,data,palette), ai: 'shoot'};
+        } else {
+            const palette = {0:'rgba(0,0,0,0)', 1:'#795548', 2:'#5d4037', 3:'#3e2723'};
+            fill(mid-4,8,8,5,2); // body
+            fill(mid-3,11,2,3,3); fill(mid+1,11,2,3,3); // legs
+            fill(mid-2,4,5,4,2); // head
+            fill(mid-3,3,2,2,2); fill(mid+2,3,2,2,2); // ears
+            return {sprite:createSprite(w,h,data,palette), ai: 'tank'};
+        }
+
+    } else if (theme.biome === 'dusk') {
+        const type = rng() < 0.5 ? 0 : 1;
+        const palette = {0:'rgba(0,0,0,0)', 1:'#b0bec5', 2:'#ffffff', 3:'#29b6f6', 4:'#263238'};
+        // Cyborg
+        fill(mid-2,10,2,4,1); fill(mid+1,10,2,4,1);
+        fill(mid-3,5,7,5,2); // white armor
+        fill(mid-1,2,3,3,4); // helmet
+        fill(mid,3,2,1,3); // visor
+        return {sprite:createSprite(w,h,data,palette), ai: type===0 ? 'burst' : 'snipe'};
+
+    } else if (theme.biome === 'mansion') {
+        // Agent / Elite
+        const palette = {0:'rgba(0,0,0,0)', 1:'#ffcc80', 2:'#212121', 3:'#fafafa', 4:'#333333'};
+        fill(mid-2,10,2,4,2); fill(mid+1,10,2,4,2);
+        fill(mid-3,6,7,4,2); // suit
+        fill(mid-1,6,3,3,3); // shirt
+        fill(mid,7,1,2,2); // tie
+        fill(mid-1,2,3,4,1); // head
+        fill(mid-2,2,5,1,4); // sunglasses
+        return {sprite:createSprite(w,h,data,palette), ai: 'dash_shoot'};
+
     } else {
-      // Snowman
-      const w=12, h=14;
-      const data = new Uint8Array(w*h);
-      const palette = {
-        0:'rgba(0,0,0,0)',
-        1:'#ffffff',
-        2:'#b0c4de', // shadow
-        3:'#d35400', // nose
-        4:'#111111'  // coal
-      };
-      const fill = (x,y,W,H,c) => { for(let iy=y;iy<y+H;iy++) for(let ix=x;ix<x+W;ix++) if(ix>=0&&ix<w&&iy>=0&&iy<h) data[iy*w+ix]=c; };
-      const mid = Math.floor(w/2);
-      // Bottom ball
-      fill(mid-3, 9, 7, 5, 1);
-      // Middle ball
-      fill(mid-2, 5, 5, 4, 1);
-      // Head
-      fill(mid-1, 2, 3, 3, 1);
-      // Nose
-      data[3*w+mid+1] = 3;
-      // Eyes
-      data[2*w+mid] = 4;
-
-      return createSprite(w, h, data, palette);
+        // Midtown / Generic (Elf/Snowman legacy but upgraded look)
+        const palette = {0:'rgba(0,0,0,0)', 1:'#ffffff', 2:'#66bb6a', 3:'#d43b3b', 4:'#333333'};
+        fill(mid-2,11,2,3,3); fill(mid+1,11,2,3,3);
+        fill(mid-3,6,7,5,2);
+        fill(mid-1,2,3,4,1);
+        fill(mid-2,1,5,2,3);
+        return {sprite:createSprite(w,h,data,palette), ai: 'wander_shoot'};
     }
   }
 
   function makeBossSprite(seed, theme){
     const rng = mulberry32(seed);
-    const w=20, h=22;
+    const w=24, h=24;
     const data = new Uint8Array(w*h);
-    const palette = {
-      0:'rgba(0,0,0,0)',
-      1:'#ffffff',
-      2:theme.accentColor,
-      3:'#d43b3b', // red
-      4:'#111111'
-    };
     const fill = (x,y,W,H,c) => { for(let iy=y;iy<y+H;iy++) for(let ix=x;ix<x+W;ix++) if(ix>=0&&ix<w&&iy>=0&&iy<h) data[iy*w+ix]=c; };
     const mid = Math.floor(w/2);
 
-    // Big Krampus / Bad Santa shape
-    // Legs
-    fill(mid-4, 16, 3, 6, 4);
-    fill(mid+1, 16, 3, 6, 4);
-    // Body
-    fill(mid-5, 8, 10, 9, 3);
-    // Arms
-    fill(mid-7, 9, 2, 7, 3);
-    fill(mid+5, 9, 2, 7, 3);
-    // Head
-    fill(mid-3, 3, 6, 6, 2); // face color
-    // Horns
-    fill(mid-4, 1, 1, 3, 4);
-    fill(mid+3, 1, 1, 3, 4);
-    // Eyes
-    data[5*w+mid-1] = 1;
-    data[5*w+mid+1] = 1;
+    if (theme.biome==='chinatown'){
+        // Dragon Mask
+        const palette = {0:'rgba(0,0,0,0)', 1:'#fbc02d', 2:'#d32f2f', 3:'#212121', 4:'#ffffff'};
+        fill(mid-5,8,10,10,2); // body
+        fill(mid-6,4,12,6,1); // mask
+        fill(mid-4,5,2,2,4); fill(mid+2,5,2,2,4); // eyes
+        fill(mid-6,0,3,4,3); fill(mid+3,0,3,4,3); // horns
+        return createSprite(w, h, data, palette);
 
-    return createSprite(w, h, data, palette);
+    } else if (theme.biome==='slavic'){
+        // Heavy Weapons Bear
+        const palette = {0:'rgba(0,0,0,0)', 1:'#795548', 2:'#4e342e', 3:'#212121', 4:'#cfd8dc'};
+        fill(mid-6,14,4,8,3); fill(mid+2,14,4,8,3); // boots
+        fill(mid-7,6,14,10,2); // fur body
+        fill(mid-8,8,3,6,4); // gun arm
+        fill(mid-4,2,8,6,1); // head
+        fill(mid-5,1,3,3,2); fill(mid+2,1,3,3,2); // ears
+        return createSprite(w, h, data, palette);
+
+    } else if (theme.biome==='dusk'){
+        // CEO Mech
+        const palette = {0:'rgba(0,0,0,0)', 1:'#eceff1', 2:'#78909c', 3:'#00bcd4', 4:'#263238'};
+        fill(mid-5,12,10,10,4); // legs
+        fill(mid-7,4,14,10,1); // chassis
+        fill(mid-3,6,6,4,3); // core window
+        fill(mid-8,2,4,8,2); fill(mid+4,2,4,8,2); // shoulder mounts
+        return createSprite(w, h, data, palette);
+
+    } else if (theme.biome==='mansion'){
+        // Bad Santa / Krampus
+        const palette = {0:'rgba(0,0,0,0)', 1:'#b71c1c', 2:'#212121', 3:'#ffeb3b', 4:'#ffffff'};
+        fill(mid-5,12,10,10,2); // robe bottom
+        fill(mid-6,4,12,10,1); // robe top
+        fill(mid-2,1,4,4,3); // crown/horns
+        fill(mid-3,4,6,4,4); // beard
+        fill(mid-8,6,3,8,1); fill(mid+5,6,3,8,1); // arms
+        return createSprite(w, h, data, palette);
+
+    } else {
+        // Midtown / Generic Boss (Big Brute)
+        const palette = {0:'rgba(0,0,0,0)', 1:'#5d4037', 2:'#8d6e63', 3:'#3e2723', 4:'#ff5722'};
+        fill(mid-5,14,4,8,3); fill(mid+1,14,4,8,3); // legs
+        fill(mid-7,5,14,9,2); // body
+        fill(mid-3,1,6,5,1); // head
+        fill(mid-2,2,1,1,4); fill(mid+1,2,1,1,4); // glowing eyes
+        return createSprite(w, h, data, palette);
+    }
   }
 
   function makePresentSprite(seed){
@@ -580,6 +667,96 @@
       2:'#27c07d',
       3:'#ffd56a'
     }, true);
+  }
+
+  function makePotionSprite(seed){
+    return makeSprite(seed, 8, 10, {
+      0:'rgba(0,0,0,0)',
+      1:'#ffffff',
+      2:'#ff4081', // pink liquid
+      3:'#eeeeee'
+    }, true);
+  }
+
+  function makeWeaponSprite(seed, kind){
+    // kind: 0=shotgun, 1=uzi, 2=sniper
+    const w=16, h=8;
+    const data = new Uint8Array(w*h);
+    const palette = {
+      0:'rgba(0,0,0,0)',
+      1:'#ffffff',
+      2:'#555555', // metal
+      3:'#222222', // grip
+      4: (kind===0 ? '#8d6e63' : kind===1 ? '#333333' : '#2e7d32') // wood/black/camo
+    };
+    const fill = (x,y,W,H,c) => { for(let iy=y;iy<y+H;iy++) for(let ix=x;ix<x+W;ix++) if(ix>=0&&ix<w&&iy>=0&&iy<h) data[iy*w+ix]=c; };
+
+    if (kind===0){ // Shotgun
+      fill(0,2,14,3,2); // barrel
+      fill(2,5,6,2,4); // stock
+      fill(8,5,2,3,3); // grip
+    } else if (kind===1){ // Uzi
+      fill(4,1,8,4,2); // body
+      fill(6,5,2,3,3); // grip
+      fill(12,2,2,2,2); // muzzle
+    } else { // Sniper
+      fill(0,3,16,2,2); // long barrel
+      fill(2,5,4,2,4); // stock
+      fill(6,1,4,2,3); // scope
+    }
+    return createSprite(w,h,data,palette);
+  }
+
+  function makeFurnitureSprite(type, seed){
+    const rng = mulberry32(seed);
+    // types: 0=table, 1=chair, 2=bed, 3=plant
+    if (type===0){ // Table
+      const w=14, h=10;
+      const data = new Uint8Array(w*h);
+      const palette = {0:'rgba(0,0,0,0)', 1:'#5d4037', 2:'#795548', 3:'#3e2723'};
+      const fill = (x,y,W,H,c) => { for(let iy=y;iy<y+H;iy++) for(let ix=x;ix<x+W;ix++) if(ix>=0&&ix<w&&iy>=0&&iy<h) data[iy*w+ix]=c; };
+      fill(1,2,w-2,6,2); // top
+      fill(2,3,w-4,4,1); // inner
+      fill(1,8,2,2,3); fill(w-3,8,2,2,3); // legs
+      fill(1,2,1,6,3); fill(w-2,2,1,6,3); // sides
+      return createSprite(w,h,data,palette);
+    } else if (type===1){ // Chair
+      const w=8, h=12;
+      const data = new Uint8Array(w*h);
+      const palette = {0:'rgba(0,0,0,0)', 1:'#5d4037', 2:'#8d6e63', 3:'#3e2723'};
+      const fill = (x,y,W,H,c) => { for(let iy=y;iy<y+H;iy++) for(let ix=x;ix<x+W;ix++) if(ix>=0&&ix<w&&iy>=0&&iy<h) data[iy*w+ix]=c; };
+      fill(1,6,6,4,2); // seat
+      fill(1,0,1,6,1); fill(6,0,1,6,1); // back
+      fill(2,1,4,1,1); fill(2,3,4,1,1); // slats
+      fill(1,10,1,2,3); fill(6,10,1,2,3); // legs
+      return createSprite(w,h,data,palette);
+    } else if (type===2){ // Bed
+      const w=14, h=18;
+      const data = new Uint8Array(w*h);
+      const palette = {0:'rgba(0,0,0,0)', 1:'#d32f2f', 2:'#e57373', 3:'#ffffff', 4:'#3e2723'};
+      const fill = (x,y,W,H,c) => { for(let iy=y;iy<y+H;iy++) for(let ix=x;ix<x+W;ix++) if(ix>=0&&ix<w&&iy>=0&&iy<h) data[iy*w+ix]=c; };
+      fill(1,1,12,16,4); // frame
+      fill(2,4,10,12,2); // sheet
+      fill(2,4,10,3,3); // pillow area
+      fill(2,2,10,2,3); // pillows
+      fill(2,10,10,5,1); // blanket
+      return createSprite(w,h,data,palette);
+    } else { // Plant
+      const w=10, h=14;
+      const data = new Uint8Array(w*h);
+      const palette = {0:'rgba(0,0,0,0)', 1:'#2e7d32', 2:'#4caf50', 3:'#795548', 4:'#3e2723'};
+      const fill = (x,y,W,H,c) => { for(let iy=y;iy<y+H;iy++) for(let ix=x;ix<x+W;ix++) if(ix>=0&&ix<w&&iy>=0&&iy<h) data[iy*w+ix]=c; };
+      fill(2,9,6,5,3); // pot
+      fill(2,9,6,1,4); // rim
+      // leaves
+      for(let i=0;i<12;i++){
+        const x = randInt(rng, 0, w-2);
+        const y = randInt(rng, 0, 8);
+        data[y*w+x] = (i%2==0) ? 1 : 2;
+        data[(y+1)*w+x+1] = (i%2==0) ? 1 : 2;
+      }
+      return createSprite(w,h,data,palette);
+    }
   }
 
   // -----------------------------
@@ -677,12 +854,15 @@
         cd: 0,
         cdMax: 0.9 * (1/run.baseStats.dashCooldownMul)
       },
+      // default pistol
       gun: {
+        kind: 'pistol',
         reload: 0,
         reloadMax: 0.18 * run.baseStats.reloadMul,
         spread: 0.08,
         bulletSpeed: 320,
-        damage: 12 * run.baseStats.damageMul
+        damage: 12 * run.baseStats.damageMul,
+        count: 1
       },
       invuln: 0,
       frame: 0,
@@ -696,6 +876,48 @@
     const treeY = (world.treeTile.y + 0.5) * TILE;
     const treeSprite = makeTreeSprite((seed+222)>>>0);
     addEnt(run, { type: ENT.TREE, x: treeX, y: treeY, r: 10, sprite: treeSprite, frame: 0 });
+
+    // Props (furniture)
+    for (const r of world.rooms){
+      // skip start and boss rooms to avoid clutter there
+      if ((r.x+Math.floor(r.w/2)===world.treeTile.x && r.y+Math.floor(r.h/2)===world.treeTile.y) ||
+          (Math.abs(r.x*TILE - world.startPos.x)<100 && Math.abs(r.y*TILE - world.startPos.y)<100)) continue;
+
+      const count = randInt(rng, 1, Math.floor(r.w*r.h/20));
+      for(let k=0; k<count; k++){
+         const type = randInt(rng, 0, 3); // 0=table, 1=chair, 2=bed, 3=plant
+         const tx = randInt(rng, r.x+1, r.x+r.w-2);
+         const ty = randInt(rng, r.y+1, r.y+r.h-2);
+         const x=(tx+0.5)*TILE, y=(ty+0.5)*TILE;
+
+         // simple collision check against other props/entities would be good but minimal works
+         if (dist(x,y,player.x,player.y)<40) continue;
+
+         const sprite = makeFurnitureSprite(type, (seed + r.x + k*55)>>>0);
+         addEnt(run, { type: ENT.PROP, x, y, r: 6, sprite, frame:0, hp: 15, dead:false });
+      }
+    }
+
+    // Potions (Rare)
+    if (chance(rng, 0.4)){
+      const room = world.rooms[randInt(rng, 0, world.rooms.length-1)];
+      const x = (randInt(rng, room.x+1, room.x+room.w-2)+0.5)*TILE;
+      const y = (randInt(rng, room.y+1, room.y+room.h-2)+0.5)*TILE;
+      if (dist(x,y,player.x,player.y)>60){
+         addEnt(run, { type: ENT.POTION, x, y, r: 6, sprite: makePotionSprite(seed), frame:0 });
+      }
+    }
+
+    // Weapons (Rare)
+    if (chance(rng, 0.35)){
+      const room = world.rooms[randInt(rng, 0, world.rooms.length-1)];
+      const x = (randInt(rng, room.x+1, room.x+room.w-2)+0.5)*TILE;
+      const y = (randInt(rng, room.y+1, room.y+room.h-2)+0.5)*TILE;
+      if (dist(x,y,player.x,player.y)>60){
+         const kind = randInt(rng, 0, 2); // 0=shotgun, 1=uzi, 2=sniper
+         addEnt(run, { type: ENT.WEAPON, x, y, r: 8, sprite: makeWeaponSprite(seed, kind), kind, frame:0 });
+      }
+    }
 
     // Presents
     const presentCount = Math.floor((10 + level*3) * theme.presentMul);
@@ -714,7 +936,7 @@
 
     // Enemies
     const baseEnemies = Math.floor((14 + level*6) * theme.enemyMul);
-    run.enemiesRemaining = baseEnemies;
+    run.enemiesRemaining = 0;
 
     for (let i=0;i<baseEnemies;i++){
       const room = world.rooms[randInt(rng, 0, Math.max(0,world.rooms.length-1))] || {x:20,y:20,w:10,h:10};
@@ -724,7 +946,7 @@
       if (dist(x,y,player.x,player.y)<120) continue;
       if (dist(x,y,treeX,treeY)<110) continue;
 
-      const sprite = makeEnemySprite((seed + 9000 + i*17)>>>0, theme);
+      const {sprite, ai} = makeEnemySprite((seed + 9000 + i*17)>>>0, theme);
       addEnt(run, {
         type: ENT.ENEMY,
         x,y,
@@ -737,10 +959,12 @@
         frame: 0,
         flip: false,
         sprite,
-        mood: chance(rng, 0.65) ? 'chase' : 'wander',
+        ai: ai || 'chase',
+        mood: 'chase',
         wx: x,
         wy: y,
       });
+      run.enemiesRemaining++;
     }
 
     // Boss
@@ -748,10 +972,15 @@
     const bossSeed = (seed ^ 0xB055) >>> 0;
     const bossSprite = makeBossSprite(bossSeed, theme);
 
+    // spawn boss safely inside room bounds
+    const far = world.rooms.find(r => r.x+Math.floor(r.w/2) === world.treeTile.x && r.y+Math.floor(r.h/2) === world.treeTile.y) || {x:world.treeTile.x-4, y:world.treeTile.y-4, w:8, h:8};
+    const bossX = clamp(treeX + 60, (far.x+1.5)*TILE, (far.x+far.w-1.5)*TILE);
+    const bossY = treeY;
+
     const boss = addEnt(run, {
       type: ENT.BOSS,
-      x: treeX + 60,
-      y: treeY,
+      x: bossX,
+      y: bossY,
       r: 12,
       hp: 220 + level*60,
       hpMax: 220 + level*60,
@@ -769,7 +998,7 @@
 
     // Ensure no starting collisions
     for (let t=0;t<50;t++){
-      if (!collideCircle(world, player.x, player.y, player.r)) break;
+      if (!collideCircle(world, player.x, player.y, player.r, run.ents)) break;
       player.x += 8; player.y += 8;
     }
 
@@ -794,25 +1023,31 @@
 
     const rng = run.rng;
     const spread = p.gun.spread;
-    const a = Math.atan2(run.aimY, run.aimX) + (rng()*2-1)*spread;
-    const vx = Math.cos(a), vy = Math.sin(a);
+    const baseAngle = Math.atan2(run.aimY, run.aimX);
+    const count = p.gun.count || 1;
 
-    run.bullets.push({
-      x: p.x + vx*10,
-      y: p.y + vy*10,
-      vx: vx * p.gun.bulletSpeed,
-      vy: vy * p.gun.bulletSpeed,
-      r: 2,
-      life: 0.9,
-      dmg: p.gun.damage,
-      from: ENT.PLAYER
-    });
+    for(let k=0; k<count; k++){
+        // for shotgun, spread is per bullet
+        const a = baseAngle + (rng()*2-1)*spread;
+        const vx = Math.cos(a), vy = Math.sin(a);
+
+        run.bullets.push({
+          x: p.x + vx*10,
+          y: p.y + vy*10,
+          vx: vx * p.gun.bulletSpeed,
+          vy: vy * p.gun.bulletSpeed,
+          r: 2,
+          life: 0.9,
+          dmg: p.gun.damage,
+          from: ENT.PLAYER
+        });
+    }
 
     // muzzle flash particles
     for (let i=0;i<4;i++){
       const sp = 70 + run.rng()*90;
-      const aa = a + (run.rng()*2-1)*0.7;
-      run.particles.push({x:p.x+vx*12, y:p.y+vy*12, vx:Math.cos(aa)*sp, vy:Math.sin(aa)*sp, life:0.18});
+      const aa = baseAngle + (run.rng()*2-1)*0.7;
+      run.particles.push({x:p.x+Math.cos(baseAngle)*12, y:p.y+Math.sin(baseAngle)*12, vx:Math.cos(aa)*sp, vy:Math.sin(aa)*sp, life:0.18});
     }
 
     p.gun.reload = p.gun.reloadMax;
@@ -842,60 +1077,92 @@
     const dx = p.x - b.x, dy = p.y - b.y;
     const [nx,ny] = norm2(dx,dy);
 
-    // Boss kinds: 0 poor (charge), 1 suburb (triple shot), 2 rich (ring shot), 3 mansion (summon + laser-ish)
-    if (b.kind===0){
-      // Charge every ~2.0s
-      if (b.timer>2.0){
+    // Basic shooting for all bosses (separate from special attacks)
+    b.shootTimer = (b.shootTimer||0) - dt;
+    if (b.shootTimer <= 0) {
+      b.shootTimer = (b.kind === 0) ? 1.5 : (b.kind === 1) ? 1.2 : 0.9;
+      // simple shot at player
+      const a = Math.atan2(ny,nx);
+      run.bullets.push({x:b.x, y:b.y, vx:Math.cos(a)*200, vy:Math.sin(a)*200, r:3, life:1.5, dmg: 8+run.level, from: ENT.BOSS});
+    }
+
+    // Boss kinds map to wealthTier 0..4
+    // 0=Chinatown (Dragon), 1=Slavic (Bear), 2=Midtown (Brute), 3=Dusk (Mech), 4=Mansion (Santa)
+
+    if (b.kind===0){ // Chinatown: Dragon Dash + Firecrackers
+      if (b.timer>1.8){
         b.timer = 0;
-        b.phase = 1;
-        b.chargeT = 0;
+        b.phase = 1; b.chargeT = 0;
         b.cx = nx; b.cy = ny;
+        // Firecracker toss
+        for(let k=0; k<6; k++){
+            const a = run.rng()*Math.PI*2;
+            const sp = 80 + run.rng()*60;
+            run.bullets.push({x:b.x, y:b.y, vx:Math.cos(a)*sp, vy:Math.sin(a)*sp, r:4, life:2.0, dmg: 8+run.level, from: ENT.BOSS});
+        }
       }
       if (b.phase===1){
         b.chargeT += dt;
-        const sp = 240;
-        tryMoveCircle(run.world, b, b.cx*sp*dt, b.cy*sp*dt);
-        if (b.chargeT>0.35){ b.phase=0; }
+        const sp = 300;
+        tryMoveCircle(run.world, b, b.cx*sp*dt, b.cy*sp*dt, run.ents);
+        if (b.chargeT>0.4){ b.phase=0; }
       }
-    } else if (b.kind===1){
-      if (b.timer>1.2){
+    } else if (b.kind===1){ // Slavic: Minigun Spin
+      if (b.timer>0.15){ // rapid fire state
+        b.timer=0;
+        b.spin = (b.spin||0) + 0.4;
+        const a = b.spin;
+        // 2-way stream
+        run.bullets.push({x:b.x, y:b.y, vx:Math.cos(a)*240, vy:Math.sin(a)*240, r:2, life:1.4, dmg: 6+run.level, from: ENT.BOSS});
+        run.bullets.push({x:b.x, y:b.y, vx:Math.cos(a+Math.PI)*240, vy:Math.sin(a+Math.PI)*240, r:2, life:1.4, dmg: 6+run.level, from: ENT.BOSS});
+      }
+    } else if (b.kind===2){ // Midtown: Triple Shot + Shockwave
+      if (b.timer>1.4){
         b.timer=0;
         const a = Math.atan2(ny,nx);
-        for (const off of [-0.18, 0, 0.18]){
+        for (const off of [-0.25, 0, 0.25]){
           const aa=a+off;
-          run.bullets.push({x:b.x, y:b.y, vx:Math.cos(aa)*260, vy:Math.sin(aa)*260, r:2, life:1.4, dmg: 10+run.level, from: ENT.BOSS});
+          run.bullets.push({x:b.x, y:b.y, vx:Math.cos(aa)*260, vy:Math.sin(aa)*260, r:3, life:1.4, dmg: 10+run.level, from: ENT.BOSS});
+        }
+        // shockwave ring
+        if(chance(run.rng, 0.4)){
+            for(let i=0; i<12; i++){
+                const aa = (i/12)*Math.PI*2;
+                run.bullets.push({x:b.x, y:b.y, vx:Math.cos(aa)*120, vy:Math.sin(aa)*120, r:2, life:0.8, dmg: 8+run.level, from: ENT.BOSS});
+            }
         }
       }
-    } else if (b.kind===2){
-      if (b.timer>1.7){
+    } else if (b.kind===3){ // Dusk Hills: Laser/Snipe
+       if (b.timer>2.0){
+           b.timer=0;
+           // accurate high speed shot
+           const a = Math.atan2(ny,nx);
+           run.bullets.push({x:b.x, y:b.y, vx:Math.cos(a)*500, vy:Math.sin(a)*500, r:4, life:1.5, dmg: 20+run.level*2, from: ENT.BOSS});
+           // flankers
+           for (const off of [-0.6, 0.6]){
+             const aa=a+off;
+             run.bullets.push({x:b.x, y:b.y, vx:Math.cos(aa)*200, vy:Math.sin(aa)*200, r:2, life:1.8, dmg: 8+run.level, from: ENT.BOSS});
+           }
+       }
+    } else { // Mansion (Santa): Summon + Chaos
+      if (b.timer>1.6){
         b.timer=0;
-        const n = 14;
-        const base = Math.atan2(ny,nx);
-        for (let i=0;i<n;i++){
-          const aa = base + (i/n)*Math.PI*2;
-          run.bullets.push({x:b.x, y:b.y, vx:Math.cos(aa)*210, vy:Math.sin(aa)*210, r:2, life:1.6, dmg: 9+run.level, from: ENT.BOSS});
-        }
-      }
-    } else {
-      // mansion: alternating summon and beam-like burst
-      if (b.timer>2.2){
-        b.timer=0;
-        if (chance(run.rng, 0.5)){
-          // summon 3 guards
-          for (let i=0;i<3;i++){
+        const action = run.rng();
+        if (action < 0.4){
+          // summon elites
+          for (let i=0;i<2;i++){
             const a = run.rng()*Math.PI*2;
-            const ex = b.x + Math.cos(a)*34;
-            const ey = b.y + Math.sin(a)*34;
-            const sprite = makeEnemySprite(((run.world.seed + 9999 + i*71)>>>0), run.world.theme);
-            addEnt(run, { type: ENT.ENEMY, x:ex, y:ey, r:6, hp: 18+run.level*6, speed: 70+run.level*4, atkCd:0.9, atkTimer:0.2, damage: 8+run.level, frame:0, flip:false, sprite, mood:'chase', wx:ex, wy:ey });
+            const ex = b.x + Math.cos(a)*40;
+            const ey = b.y + Math.sin(a)*40;
+            const {sprite, ai} = makeEnemySprite(((run.world.seed + 9999 + i*71 + run.time*10)>>>0), run.world.theme);
+            addEnt(run, { type: ENT.ENEMY, x:ex, y:ey, r:6, hp: 25+run.level*5, speed: 80+run.level*4, atkCd:0.9, atkTimer:0.2, damage: 10+run.level, frame:0, flip:false, sprite, ai:ai||'chase', mood:'chase', wx:ex, wy:ey });
             run.enemiesRemaining += 1;
           }
         } else {
-          // burst volley along aim
-          const a = Math.atan2(ny,nx);
-          for (let k=0;k<6;k++){
-            const aa = a + (run.rng()*2-1)*0.10;
-            run.bullets.push({x:b.x, y:b.y, vx:Math.cos(aa)*(320), vy:Math.sin(aa)*(320), r:2, life:1.05, dmg: 12+run.level, from: ENT.BOSS});
+          // chaos volley
+          for (let k=0;k<16;k++){
+            const aa = run.rng()*Math.PI*2;
+            run.bullets.push({x:b.x, y:b.y, vx:Math.cos(aa)*(180+run.rng()*100), vy:Math.sin(aa)*(180+run.rng()*100), r:3, life:1.2, dmg: 10+run.level, from: ENT.BOSS});
           }
         }
       }
@@ -903,7 +1170,7 @@
 
     // gentle pursue
     const sp = (b.speed) * (b.hp < b.hpMax*0.5 ? 1.15 : 1.0);
-    tryMoveCircle(run.world, b, nx*sp*dt, ny*sp*dt);
+    tryMoveCircle(run.world, b, nx*sp*dt, ny*sp*dt, run.ents);
   }
 
   function hurt(run, target, dmg){
@@ -1027,7 +1294,7 @@
 
     if (mx!==0||my!==0){
       const [nx,ny]=norm2(mx,my);
-      tryMoveCircle(world, p, nx*p.speed*dt, ny*p.speed*dt);
+      tryMoveCircle(world, p, nx*p.speed*dt, ny*p.speed*dt, run.ents);
       p.frame = (p.frame + dt*10) % 4;
       if (nx!==0) p.flip = nx<0;
     } else {
@@ -1049,7 +1316,7 @@
           p.dash.charges -= 1;
           const [nx,ny]=norm2(mx,my);
           for (let i=0;i<10;i++){
-            tryMoveCircle(world, p, nx*22, ny*22);
+            tryMoveCircle(world, p, nx*22, ny*22, run.ents);
           }
           p.invuln = Math.max(p.invuln, 0.20);
         }
@@ -1075,12 +1342,20 @@
       if (b.life>0){
         for (const e of run.ents){
           if (e.dead) continue;
-          if (b.from===ENT.PLAYER && (e.type===ENT.ENEMY || e.type===ENT.BOSS)){
+          if (b.from===ENT.PLAYER && (e.type===ENT.ENEMY || e.type===ENT.BOSS || e.type===ENT.PROP)){
             if (dist(b.x,b.y,e.x,e.y) <= (b.r+e.r)){
               hurt(run, e, b.dmg);
               b.life=0;
               break;
             }
+          }
+          // Enemy bullets hitting props
+          if ((b.from===ENT.ENEMY || b.from===ENT.BOSS) && e.type===ENT.PROP){
+             if (dist(b.x,b.y,e.x,e.y) <= (b.r+e.r)){
+               hurt(run, e, b.dmg);
+               b.life=0;
+               break;
+             }
           }
           if ((b.from===ENT.ENEMY || b.from===ENT.BOSS) && e.type===ENT.PLAYER){
             if (dist(b.x,b.y,e.x,e.y) <= (b.r+e.r)){
@@ -1101,8 +1376,37 @@
         e.frame = (e.frame + dt*6) % 4;
 
         const d = dist(e.x,e.y,p.x,p.y);
-        if (d < 220){ e.mood='chase'; }
-        if (d > 340 && chance(run.rng, 0.01)) e.mood='wander';
+
+        // AI Behaviors
+        // rush: moves fast towards player, melee only (collide damage), no shoot
+        // bomb: maintains range, throws bombs
+        // shoot: standard shoot/move
+        // tank: slow, lots of hp, shoot
+        // burst: burst fire
+        // snipe: long range, slow fire, high accuracy
+        // dash_shoot: dashes occasionally
+
+        let moveSpd = e.speed;
+        let shootRange = 260;
+        let maintainDist = 0;
+
+        if (e.ai === 'rush') {
+            shootRange = 0; // no shooting
+            maintainDist = 0;
+            moveSpd *= 1.3;
+        } else if (e.ai === 'bomb') {
+            shootRange = 240;
+            maintainDist = 180;
+        } else if (e.ai === 'snipe') {
+            shootRange = 450;
+            maintainDist = 350;
+            moveSpd *= 0.7;
+        } else if (e.ai === 'tank') {
+            moveSpd *= 0.6;
+        }
+
+        if (d < shootRange + 100){ e.mood='chase'; }
+        if (d > shootRange + 200 && chance(run.rng, 0.01)) e.mood='wander';
 
         if (e.mood==='wander'){
           if (dist(e.x,e.y,e.wx,e.wy) < 12 || chance(run.rng, 0.01)){
@@ -1110,17 +1414,45 @@
             e.wy = e.y + (run.rng()*2-1)*140;
           }
           const [nx,ny]=norm2(e.wx-e.x, e.wy-e.y);
-          tryMoveCircle(world, e, nx*e.speed*dt, ny*e.speed*dt);
+          tryMoveCircle(world, e, nx*moveSpd*dt, ny*moveSpd*dt, run.ents);
           if (nx!==0) e.flip = nx<0;
         } else {
-          const [nx,ny]=norm2(p.x-e.x, p.y-e.y);
-          tryMoveCircle(world, e, nx*e.speed*dt, ny*e.speed*dt);
-          if (nx!==0) e.flip = nx<0;
+          // Chase / Combat
+          let mx=0, my=0;
+          if (maintainDist > 0) {
+             if (d < maintainDist) { mx = -(p.x-e.x); my = -(p.y-e.y); } // back away
+             else if (d > maintainDist+40) { mx = p.x-e.x; my = p.y-e.y; } // approach
+          } else {
+             mx = p.x-e.x; my = p.y-e.y;
+          }
 
+          if (mx!==0 || my!==0){
+             const [nx,ny]=norm2(mx,my);
+             tryMoveCircle(world, e, nx*moveSpd*dt, ny*moveSpd*dt, run.ents);
+             if (nx!==0) e.flip = nx<0;
+          }
+
+          // Attack
           e.atkTimer -= dt;
-          if (e.atkTimer<=0 && d<260){
+          if (shootRange > 0 && e.atkTimer<=0 && d<shootRange){
             e.atkTimer = e.atkCd;
-            enemyShoot(run, e);
+            if (e.ai === 'burst') {
+                for(let k=0; k<3; k++) setTimeout(()=> !e.dead && enemyShoot(run,e), k*100);
+                e.atkTimer += 0.5;
+            } else if (e.ai === 'bomb') {
+                // throw grenade (arcing bullet)
+                const dx = p.x - e.x, dy = p.y - e.y;
+                const [nx,ny] = norm2(dx,dy);
+                run.bullets.push({x:e.x, y:e.y, vx:nx*180, vy:ny*180, r:4, life:1.2, dmg:e.damage*1.5, from:ENT.ENEMY});
+            } else {
+                enemyShoot(run, e);
+            }
+          }
+
+          // Melee damage logic is handled in collision or if entity touches player?
+          // Currently bullets do dmg. We should add body contact damage for 'rush' enemies.
+          if (e.ai === 'rush' && dist(e.x,e.y,p.x,p.y) < (e.r+p.r+2)){
+             hurt(run, p, 15*dt); // continuous damage contact
           }
         }
       }
@@ -1141,6 +1473,56 @@
         }
         if (d < (p.r+e.r+2)){
           addOrnaments(run, 1);
+          e.dead = true;
+        }
+      }
+
+      if (e.type===ENT.POTION){
+        if (dist(e.x,e.y,p.x,p.y) < (p.r+e.r+4)){
+          p.hp = Math.min(p.maxHp, p.hp + p.maxHp*0.5);
+          run.msg = 'Drank Potion: Restored 50% HP';
+          e.dead = true;
+        }
+      }
+
+      if (e.type===ENT.WEAPON){
+        if (dist(e.x,e.y,p.x,p.y) < (p.r+e.r+4)){
+          // 0=shotgun, 1=uzi, 2=sniper
+          const baseDmg = 12 * run.baseStats.damageMul;
+          if (e.kind===0){
+              p.gun = {
+                  kind: 'shotgun',
+                  reload: 0,
+                  reloadMax: 0.55 * run.baseStats.reloadMul, // slow
+                  spread: 0.35,
+                  bulletSpeed: 290,
+                  damage: baseDmg * 0.7, // lower per bullet
+                  count: 5 // 5 bullets
+              };
+              run.msg = 'Equipped: SHOTGUN';
+          } else if (e.kind===1){
+              p.gun = {
+                  kind: 'uzi',
+                  reload: 0,
+                  reloadMax: 0.08 * run.baseStats.reloadMul, // very fast
+                  spread: 0.22,
+                  bulletSpeed: 340,
+                  damage: baseDmg * 0.6, // low damage
+                  count: 1
+              };
+              run.msg = 'Equipped: UZI';
+          } else {
+              p.gun = {
+                  kind: 'sniper',
+                  reload: 0,
+                  reloadMax: 0.9 * run.baseStats.reloadMul, // very slow
+                  spread: 0.01,
+                  bulletSpeed: 480,
+                  damage: baseDmg * 3.5, // high damage
+                  count: 1
+              };
+              run.msg = 'Equipped: SNIPER';
+          }
           e.dead = true;
         }
       }
@@ -1353,20 +1735,36 @@
 
         // HP bars for boss
         if (e.type===ENT.BOSS){
-          const w=120, h=6;
-          const bx = 16, by = 14;
+          const w=200, h=10;
+          const bx = canvas.width/2 - w/2, by = canvas.height - 40;
           ctx.fillStyle = 'rgba(0,0,0,0.55)';
           ctx.fillRect(bx,by,w,h);
           ctx.fillStyle = theme.accentColor;
           ctx.fillRect(bx,by,w*(e.hp/e.hpMax),h);
-          ctx.strokeStyle = 'rgba(255,255,255,0.15)';
+          ctx.strokeStyle = 'rgba(255,255,255,0.4)';
           ctx.strokeRect(bx,by,w,h);
+          // boss name
+          ctx.fillStyle = '#ffffff';
+          ctx.font = '12px ui-monospace, monospace';
+          ctx.textAlign = 'center';
+          ctx.fillText(`BOSS`, bx+w/2, by-4);
+          ctx.textAlign = 'start';
         }
       }
 
       if (e.type===ENT.PRESENT){
         const scale=2;
         e.sprite.draw(Math.floor(x-(e.sprite.w*scale)/2), Math.floor(y-(e.sprite.h*scale)/2), scale, Math.floor(e.frame)%2, false);
+      }
+
+      if (e.type===ENT.POTION){
+        const scale=2;
+        e.sprite.draw(Math.floor(x-(e.sprite.w*scale)/2), Math.floor(y-(e.sprite.h*scale)/2), scale, 0, false);
+      }
+
+      if (e.type===ENT.WEAPON){
+        const scale=2;
+        e.sprite.draw(Math.floor(x-(e.sprite.w*scale)/2), Math.floor(y-(e.sprite.h*scale)/2), scale, 0, false);
       }
 
       if (e.type===ENT.TREE){
@@ -1377,6 +1775,10 @@
         ctx.beginPath();
         ctx.arc(x,y,22+Math.sin(run.time*2)*2,0,Math.PI*2);
         ctx.fill();
+      }
+
+      if (e.type===ENT.PROP){
+        e.sprite.draw(Math.floor(x-(e.sprite.w)/2), Math.floor(y-(e.sprite.h)/2), 1, 0, false);
       }
 
       if (e.type===ENT.ORNAMENT){
