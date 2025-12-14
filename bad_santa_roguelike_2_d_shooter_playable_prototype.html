@@ -298,11 +298,12 @@
   }
 
   function carveCorridor(map, ax,ay,bx,by, floorId){
-    // L-shaped corridor (2 tiles wide for easier movement)
+    // L-shaped corridor (3 tiles wide for easier movement and style)
     const horizFirst = ((ax^ay^bx^by) & 1) === 0;
     const drawH = (x1,x2,y)=>{
       const s=Math.min(x1,x2), e=Math.max(x1,x2);
       for (let x=s; x<=e; x++){
+        if (y-1 > 0) map[(y-1)*MAP_W+x]=floorId;
         map[y*MAP_W+x]=floorId;
         if (y+1 < MAP_H-1) map[(y+1)*MAP_W+x]=floorId;
       }
@@ -310,6 +311,7 @@
     const drawV = (y1,y2,x)=>{
       const s=Math.min(y1,y2), e=Math.max(y1,y2);
       for (let y=s; y<=e; y++){
+        if (x-1 > 0) map[y*MAP_W+(x-1)]=floorId;
         map[y*MAP_W+x]=floorId;
         if (x+1 < MAP_W-1) map[y*MAP_W+(x+1)]=floorId;
       }
@@ -438,7 +440,8 @@
     PROP: 'prop',
     POTION: 'potion',
     WEAPON: 'weapon',
-    CANDY: 'candy'
+    CANDY: 'candy',
+    DECOR: 'decor'
   };
 
   function tileAt(world, tx, ty){
@@ -595,6 +598,26 @@
         fill(mid-2,1,5,2,3);
         return {sprite:createSprite(w,h,data,palette), ai: 'wander_shoot'};
     }
+  }
+
+  function generateBossName(theme, rng){
+    const pre = {
+      chinatown: ['Jade', 'Red', 'Iron', 'Golden', 'Shadow'],
+      slavic: ['Boris', 'Ivan', 'General', 'Hard', 'Cold'],
+      midtown: ['Manager', 'Angry', 'Big', 'Santa', 'The'],
+      dusk: ['Cyber', 'Neon', 'Unit', 'Project', 'Tech'],
+      mansion: ['Krampus', 'Dark', 'Lord', 'Saint', 'Grand']
+    };
+    const suf = {
+      chinatown: ['Dragon', 'Tiger', 'Emperor', 'Monk', 'Lotus'],
+      slavic: ['Bear', 'Hammer', 'Winter', 'Wolf', 'Tank'],
+      midtown: ['Karen', 'Neighbor', 'Dad', 'Boss', 'Consumer'],
+      dusk: ['Claus', 'Ghost', 'Zero', 'One', 'Spectre'],
+      mansion: ['Father', 'Claus', 'Nicholas', 'Spirit', 'Demon']
+    };
+    const p = pre[theme.biome] || pre.midtown;
+    const s = suf[theme.biome] || suf.midtown;
+    return p[randInt(rng, 0, p.length-1)] + ' ' + s[randInt(rng, 0, s.length-1)];
   }
 
   function makeBossSprite(seed, theme){
@@ -892,6 +915,108 @@
       }
       return createSprite(w,h,data,palette);
     }
+  }
+
+  function makeDecorSprite(theme, type, seed){
+    const rng = mulberry32(seed);
+    // type: 'rug', 'window', 'clutter'
+    const w=16, h=16; // default
+    let data = new Uint8Array(w*h);
+    let palette = {0:'rgba(0,0,0,0)'};
+    const fill = (x,y,W,H,c) => { for(let iy=y;iy<y+H;iy++) for(let ix=x;ix<x+W;ix++) if(ix>=0&&ix<w&&iy>=0&&iy<h) data[iy*w+ix]=c; };
+    const mid = Math.floor(w/2);
+
+    if (type === 'rug'){
+      // Rugs should be roughly tile size (12x12) or larger?
+      const ww=12, hh=12;
+      const p = {0:'rgba(0,0,0,0)'};
+      if (theme.biome === 'chinatown'){
+        p[1]='#b71c1c'; p[2]='#e65100'; // red/orange
+        fill(2,2,ww,hh,1);
+        fill(3,3,ww-2,hh-2,2);
+        fill(4,4,ww-4,hh-4,1);
+        fill(6,6,4,4,2);
+      } else if (theme.biome === 'slavic'){
+        p[1]='#4e342e'; p[2]='#3e2723'; // brown/dark
+        fill(2,2,ww,hh,1);
+        // worn spots
+        for(let i=0;i<10;i++) data[randInt(rng,2,13)*16+randInt(rng,2,13)]=0;
+        fill(3,3,ww-2,hh-2,2);
+      } else if (theme.biome === 'midtown'){
+         p[1]='#3f51b5'; p[2]='#7986cb'; // blue
+         fill(2,2,ww,hh,1);
+         fill(3,3,ww-2,hh-2,2);
+         // stripes
+         fill(5,2,2,hh,1); fill(9,2,2,hh,1);
+      } else if (theme.biome === 'dusk'){
+        p[1]='#263238'; p[2]='#cfd8dc'; // metal grate
+        fill(2,2,ww,hh,1);
+        for(let y=2;y<14;y+=2) fill(2,y,ww,1,2);
+      } else { // mansion
+        p[1]='#4a148c'; p[2]='#880e4f'; // royal purple/red
+        fill(2,2,ww,hh,1);
+        fill(3,3,ww-2,hh-2,2);
+        // gold trim
+        p[3]='#ffd700';
+        fill(2,2,ww,1,3); fill(2,13,ww,1,3); fill(2,2,1,hh,3); fill(13,2,1,hh,3);
+      }
+      return createSprite(16,16,data,p);
+
+    } else if (type === 'window'){
+      const ww=10, hh=12;
+      // Windows are on North walls.
+      const p = {0:'rgba(0,0,0,0)'};
+      if (theme.biome === 'chinatown'){
+         p[1]='#3e2723'; p[2]='#ffecb3'; // wood/light
+         // Circle window or lattice
+         fill(3,2,10,10,1); // frame
+         fill(4,3,8,8,2); // light
+         fill(4,7,8,1,1); // bars
+         fill(7,3,1,8,1);
+      } else if (theme.biome === 'slavic'){
+         p[1]='#424242'; p[2]='#90a4ae'; // grey/dim light
+         fill(3,2,10,8,1);
+         fill(4,3,8,6,2);
+         fill(5,3,1,4,0); // crack
+      } else if (theme.biome === 'midtown'){
+          p[1]='#5d4037'; p[2]='#81d4fa'; // wood/sky
+          fill(3,2,10,10,1);
+          fill(4,3,8,8,2);
+          fill(4,7,8,1,1);
+          fill(8,3,1,8,1);
+          // curtains
+          p[3]='#e57373';
+          fill(2,2,3,10,3); fill(11,2,3,10,3);
+      } else if (theme.biome === 'dusk'){
+          p[1]='#263238'; p[2]='#00bcd4'; // dark/neon
+          fill(3,4,10,2,1);
+          fill(4,5,8,1,2); // neon slit
+      } else { // mansion
+          p[1]='#3e2723'; p[2]='#fff59d'; // dark wood/warm light
+          fill(3,0,10,14,1); // tall
+          fill(4,1,8,12,2);
+          fill(8,1,1,12,1);
+      }
+      return createSprite(16,16,data,p);
+
+    } else if (type === 'clutter'){
+        // Random small items
+        const item = randInt(rng, 0, 2);
+        const p = {0:'rgba(0,0,0,0)', 1:'#ffffff', 2:'#757575'};
+        if (item===0){ // Papers
+           fill(6,6,3,4,1);
+           fill(7,7,1,2,2);
+        } else if (item===1){ // Bottle/Can
+           p[3]='#ef5350';
+           fill(7,6,2,4,3);
+           fill(7,5,2,1,2);
+        } else { // Stain
+           p[1]='#3e2723';
+           fill(5,6,6,4,1);
+        }
+        return createSprite(16,16,data,p);
+    }
+    return createSprite(16,16,data,palette);
   }
 
   // -----------------------------
@@ -1248,6 +1373,54 @@
 
     const startHp = (typeof hpOverride === 'number') ? hpOverride : run.baseStats.maxHp;
 
+    // 1. Decor (Rugs, Windows, Clutter)
+    // Needs to be before player for Z-order (rendered first = behind)
+
+    // Rugs from map
+    for (let y=0;y<MAP_H;y++){
+      for (let x=0;x<MAP_W;x++){
+        if (tileAt(world,x,y)===T.RUG){
+           // spawn decor
+           const sprite = makeDecorSprite(theme, 'rug', (seed+x*y)>>>0);
+           addEnt(run, { type: ENT.DECOR, x:(x+0.5)*TILE, y:(y+0.5)*TILE, r:0, sprite, frame:0 });
+           // reset tile to floor to keep it walkable and have background color
+           world.map[y*MAP_W+x] = theme.specialFloor;
+        }
+      }
+    }
+
+    // Windows (North walls)
+    // Scan walls: if map[y][x] is WALL and map[y+1][x] is FLOOR (or special floor)
+    for (let y=1;y<MAP_H-1;y++){
+      for (let x=1;x<MAP_W-1;x++){
+        const t = tileAt(world, x,y);
+        const tDown = tileAt(world, x,y+1);
+        if (t===T.WALL && (tDown===T.FLOOR || tDown===T.GOLD || tDown===T.MARBLE || tDown===theme.specialFloor)){
+           if (chance(rng, 0.3)){
+              const sprite = makeDecorSprite(theme, 'window', (seed+x*37+y)>>>0);
+              // offset y slightly to align with wall face
+              addEnt(run, { type: ENT.DECOR, x:(x+0.5)*TILE, y:(y+0.5)*TILE, r:0, sprite, frame:0 });
+           }
+        }
+      }
+    }
+
+    // Clutter on floors
+    for (const r of world.rooms){
+       const n = randInt(rng, 0, Math.floor(r.w*r.h*0.05));
+       for(let k=0;k<n;k++){
+         const tx = randInt(rng, r.x+1, r.x+r.w-2);
+         const ty = randInt(rng, r.y+1, r.y+r.h-2);
+         const x=(tx+0.5)*TILE, y=(ty+0.5)*TILE;
+         // avoid start/tree
+         if (dist(x,y,world.startPos.x, world.startPos.y)<60) continue;
+         if (dist(x,y,(world.treeTile.x+0.5)*TILE, (world.treeTile.y+0.5)*TILE)<60) continue;
+
+         const sprite = makeDecorSprite(theme, 'clutter', (seed+k*99+tx)>>>0);
+         addEnt(run, { type: ENT.DECOR, x, y, r:0, sprite, frame:0 });
+       }
+    }
+
     // Player
     const pSprite = makePlayerSprite((seed+1)>>>0, theme);
     const player = addEnt(run, {
@@ -1373,6 +1546,7 @@
     const bossType = theme.bossType;
     const bossSeed = (seed ^ 0xB055) >>> 0;
     const bossSprite = makeBossSprite(bossSeed, theme);
+    const bossName = generateBossName(theme, rng);
 
     // spawn boss safely inside room bounds
     const far = world.rooms.find(r => r.x+Math.floor(r.w/2) === world.treeTile.x && r.y+Math.floor(r.h/2) === world.treeTile.y) || {x:world.treeTile.x-4, y:world.treeTile.y-4, w:8, h:8};
@@ -1393,6 +1567,7 @@
       flip: false,
       sprite: bossSprite,
       kind: bossType, // 0..3
+      name: bossName
     });
 
     run.boss = boss;
@@ -2154,9 +2329,13 @@
           ctx.fillStyle = '#ffffff';
           ctx.font = '12px ui-monospace, monospace';
           ctx.textAlign = 'center';
-          ctx.fillText(`BOSS`, bx+w/2, by-4);
+          ctx.fillText(e.name || 'BOSS', bx+w/2, by-4);
           ctx.textAlign = 'start';
         }
+      }
+
+      if (e.type===ENT.DECOR){
+         e.sprite.draw(Math.floor(x - (e.sprite.w)/2), Math.floor(y - (e.sprite.h)/2), 1, 0, false);
       }
 
       if (e.type===ENT.PRESENT){
