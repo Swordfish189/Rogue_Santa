@@ -287,7 +287,7 @@
       wallColor: wall,
       accentColor: accent,
       specialFloor: special,
-      decorRate: lerp(0.05, 0.25, t),
+      decorRate: lerp(0.02, 0.1, t),
       targetRooms: Math.floor(lerp(12, 28, t)),
       enemyMul: lerp(0.8, 1.8, t),
       presentMul: lerp(0.8, 1.4, t),
@@ -1206,8 +1206,9 @@
        while (this.nextNoteTime < this.ctx.currentTime + lookahead) {
            // Determine biome from global game object if available
            let biome = 'midtown';
-           if (typeof game !== 'undefined' && game && game.world && game.world.theme) {
-               biome = game.world.theme.biome;
+           if (typeof game !== 'undefined' && game) {
+               if (game.mode === 'menu') biome = 'menu';
+               else if (game.world && game.world.theme) biome = game.world.theme.biome;
            }
 
            this.playMusicForBiome(biome, this.nextNoteTime, this.noteIndex);
@@ -1253,7 +1254,49 @@
            osc.stop(time + dur);
        };
 
-       if (biome === 'chinatown') {
+       if (biome === 'menu') {
+           // Christmas Horror Rock
+           const beat = index % 16;
+
+           // Driving Bass (D2)
+           if (beat % 2 === 0) {
+               bass(73.42, 'sawtooth', 0.25, 0.2, 500);
+           }
+
+           // Drums (Rock Beat)
+           if (beat % 4 === 0) this.playNoise(0.05, 0.35); // Kick
+           if (beat % 4 === 2) this.playNoise(0.12, 0.25); // Snare
+
+           // Lead Guitar: Dark Jingle Bells
+           // Pattern: E E E... E E E... E G C D E
+           // E4 = 329.63
+           const m = index % 32;
+           let note = 0, len = 0.2;
+
+           if (m === 0) note = 329.63;
+           if (m === 2) note = 329.63;
+           if (m === 4) { note = 329.63; len = 0.4; }
+
+           if (m === 8) note = 329.63;
+           if (m === 10) note = 329.63;
+           if (m === 12) { note = 329.63; len = 0.4; }
+
+           if (m === 16) note = 329.63;
+           if (m === 18) note = 392.00; // G
+           if (m === 20) note = 261.63; // C
+           if (m === 22) note = 293.66; // D
+           if (m === 24) { note = 329.63; len = 0.6; }
+
+           if (note) {
+               // Distortion effect (simulated by dual sawtooths detuned)
+               pluck(note, 'sawtooth', 0.12, len);
+               pluck(note * 1.01, 'sawtooth', 0.12, len);
+           }
+
+           // Occasional feedback scream
+           if (index % 64 === 60) pluck(1100, 'sawtooth', 0.04, 0.8);
+
+       } else if (biome === 'chinatown') {
            // Pentatonic, generative plucked strings
            // Pattern length 32
            const i = index % 32;
@@ -1520,7 +1563,8 @@
         const t = tileAt(world, x,y);
         const tDown = tileAt(world, x,y+1);
         if (t===T.WALL && (tDown===T.FLOOR || tDown===T.GOLD || tDown===T.MARBLE || tDown===theme.specialFloor)){
-           if (chance(rng, 0.3)){
+           // Organized windows: Grid aligned (every 4th tile) and lower chance
+           if (x % 4 === 0 && chance(rng, 0.25)){
               const sprite = makeDecorSprite(theme, 'window', (seed+x*37+y)>>>0);
               // offset y slightly to align with wall face
               addEnt(run, { type: ENT.DECOR, x:(x+0.5)*TILE, y:(y+0.5)*TILE, r:0, sprite, frame:0 });
@@ -1531,7 +1575,7 @@
 
     // Clutter on floors
     for (const r of world.rooms){
-       const n = randInt(rng, 0, Math.floor(r.w*r.h*0.05));
+       const n = randInt(rng, 0, Math.floor(r.w*r.h*0.02));
        for(let k=0;k<n;k++){
          const tx = randInt(rng, r.x+1, r.x+r.w-2);
          const ty = randInt(rng, r.y+1, r.y+r.h-2);
@@ -1927,7 +1971,14 @@
            addEnt(run, { type: ENT.CANDY, x:target.x, y:target.y, r: 4, sprite: makeCandySprite((run.time*100)>>>0), frame: 0 });
         }
 
-        if (target.type===ENT.ENEMY) run.enemiesRemaining = Math.max(0, run.enemiesRemaining-1);
+        if (target.type===ENT.ENEMY) {
+            run.enemiesRemaining = Math.max(0, run.enemiesRemaining-1);
+            // Recharge dash on kill
+            if (run.player.dash.charges < run.player.dash.maxCharges){
+                run.player.dash.charges++;
+                run.msg = "Dash Recharged!";
+            }
+        }
         if (target.type===ENT.BOSS) run.bossAlive = false;
 
         target.dead = true;
@@ -1971,6 +2022,21 @@
 
     // Global mode transitions
     if (run.mode === 'menu') {
+        if (run.menuSubState === 'reset_confirm') {
+             if (key('KeyY')) {
+                 // confirm reset
+                 localStorage.removeItem(META_KEY);
+                 meta = defaultMeta();
+                 saveMeta();
+                 run.menuSubState = null;
+                 run.msg = "Progress Reset!";
+             }
+             if (key('KeyN')) {
+                 run.menuSubState = null;
+             }
+             return;
+        }
+
         if (key('Enter') && !run._enterDown) {
             run._enterDown = true;
             // Start game
@@ -1978,6 +2044,11 @@
             startNewRun(seed);
         }
         if (!key('Enter')) run._enterDown = false;
+
+        // Reset Prompt
+        if (key('Delete') || key('KeyX')) {
+            run.menuSubState = 'reset_confirm';
+        }
         return;
     }
 
@@ -2043,11 +2114,7 @@
 
     // Dash
     p.dash.cd = Math.max(0, p.dash.cd - dt);
-    if (p.dash.charges < p.dash.maxCharges && p.dash.cd<=0){
-      // recharge
-      p.dash.charges += 1;
-      p.dash.cd = p.dash.cdMax;
-    }
+    // Recharge is handled in hurt() on kills now.
 
     if (key('ShiftLeft') || key('ShiftRight')){
       if (!run._shiftDown){
@@ -2442,7 +2509,24 @@
         ctx.fillText('BAD SANTA', canvas.width/2, canvas.height - 60);
         ctx.font = '16px ui-monospace, monospace';
         ctx.fillStyle = '#d8e1ee';
-        ctx.fillText('Press Enter to Start', canvas.width/2, canvas.height - 30);
+        ctx.fillText('Press Enter to Start', canvas.width/2, canvas.height - 35);
+        ctx.font = '12px ui-monospace, monospace';
+        ctx.fillStyle = '#888';
+        ctx.fillText('Press Delete/X to Reset Progress', canvas.width/2, canvas.height - 15);
+
+        if (run.menuSubState === 'reset_confirm') {
+            ctx.fillStyle = 'rgba(0,0,0,0.85)';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            ctx.fillStyle = '#ef5350';
+            ctx.font = '28px ui-monospace, monospace';
+            ctx.fillText('⚠️ WARNING ⚠️', canvas.width/2, canvas.height/2 - 40);
+            ctx.fillStyle = '#fff';
+            ctx.font = '16px ui-monospace, monospace';
+            ctx.fillText('This will erase ALL meta progression and skills.', canvas.width/2, canvas.height/2);
+            ctx.fillText('Are you sure?', canvas.width/2, canvas.height/2 + 25);
+            ctx.fillText('[Y] Yes, Delete Everything   |   [N] Cancel', canvas.width/2, canvas.height/2 + 60);
+        }
+
         ctx.textAlign = 'start';
         return;
     }
