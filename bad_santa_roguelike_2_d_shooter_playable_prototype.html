@@ -69,6 +69,9 @@
   const statusEl = document.getElementById('status');
   const metaEl = document.getElementById('meta');
 
+  const menuImg = new Image();
+  menuImg.src = 'Gemini_Generated_Image_kgv30wkgv30wkgv3.png';
+
   // -----------------------------
   // Utilities / PRNG
   // -----------------------------
@@ -163,7 +166,11 @@
       dmg: 0,       // +8% damage per level
       spd: 0,       // +6% speed per level
       reload: 0,    // -6% reload per level
-      dash: 0       // +1 dash charge at max
+      dash: 0,      // +1 dash charge at max
+      magnet: 0,
+      greed: 0,
+      regen: 0,
+      luck: 0
     },
     // last seed for fun
     lastSeed: 123456
@@ -186,11 +193,15 @@
   let meta = loadMeta();
 
   const SKILL_INFO = {
-    hp:     { name: 'Tough Coat',  desc: '+10 Max HP',       max: 8, cost: (lv)=> 6 + lv*6 },
-    dmg:    { name: 'Mean Spirit', desc: '+8% Damage',       max: 8, cost: (lv)=> 8 + lv*7 },
-    spd:    { name: 'Sleigh Boots',desc: '+6% Move Speed',   max: 8, cost: (lv)=> 7 + lv*6 },
-    reload: { name: 'Fast Hands',  desc: '-6% Reload Time',  max: 8, cost: (lv)=> 7 + lv*6 },
-    dash:   { name: 'Dash Charge', desc: 'More dashes',      max: 3, cost: (lv)=> 12 + lv*12 },
+    hp:     { name: 'Tough Coat',  desc: '+10 Max HP',       max: 20, cost: (lv)=> 6 + lv*6 },
+    dmg:    { name: 'Mean Spirit', desc: '+8% Damage',       max: 20, cost: (lv)=> 8 + lv*7 },
+    spd:    { name: 'Sleigh Boots',desc: '+6% Move Speed',   max: 20, cost: (lv)=> 7 + lv*6 },
+    reload: { name: 'Fast Hands',  desc: '-6% Reload Time',  max: 20, cost: (lv)=> 7 + lv*6 },
+    dash:   { name: 'Dash Charge', desc: 'More dashes',      max: 5,  cost: (lv)=> 12 + lv*12 },
+    magnet: { name: 'Magic Magnet',desc: '+Range for items', max: 10, cost: (lv)=> 8 + lv*5 },
+    greed:  { name: 'Sack of Greed',desc: '+Ornaments drop', max: 10, cost: (lv)=> 10 + lv*8 },
+    regen:  { name: 'Cookies',     desc: 'Passive HP regen', max: 10, cost: (lv)=> 15 + lv*10 },
+    luck:   { name: 'Holiday Luck',desc: '+Item drop chance',max: 10, cost: (lv)=> 12 + lv*8 },
   };
 
   // -----------------------------
@@ -1382,6 +1393,10 @@
     const spdLv = meta.skills.spd|0;
     const relLv = meta.skills.reload|0;
     const dashLv= meta.skills.dash|0;
+    const magLv = meta.skills.magnet|0;
+    const greLv = meta.skills.greed|0;
+    const regLv = meta.skills.regen|0;
+    const lucLv = meta.skills.luck|0;
 
     return {
       maxHp: 60 + hpLv*10,
@@ -1390,6 +1405,10 @@
       reloadMul: 1 - relLv*0.06,
       dashCharges: 1 + Math.floor(dashLv/2),
       dashCooldownMul: 1 - dashLv*0.06,
+      magnetRange: 120 + magLv*20,
+      greedMul: 1 + greLv*0.15,
+      regenAmount: regLv * 0.2, // hp per second
+      luckMul: 1 + lucLv*0.1
     };
   }
 
@@ -1423,6 +1442,7 @@
       bullets: [],
       particles: [],
       decals: [],
+      ghosts: [],
       // world
       world: null,
       // UI selection in meta shop
@@ -1468,6 +1488,7 @@
     run.bullets = [];
     run.particles = [];
     run.decals = [];
+    run.ghosts = [];
     run.time = 0;
     run.msg = '';
     run.mode = 'play';
@@ -1577,7 +1598,7 @@
     }
 
     // Potions (Rare)
-    if (chance(rng, 0.4)){
+    if (chance(rng, 0.4 * run.baseStats.luckMul)){
       const room = world.rooms[randInt(rng, 0, world.rooms.length-1)];
       const x = (randInt(rng, room.x+1, room.x+room.w-2)+0.5)*TILE;
       const y = (randInt(rng, room.y+1, room.y+room.h-2)+0.5)*TILE;
@@ -1587,7 +1608,7 @@
     }
 
     // Weapons (Rare)
-    if (chance(rng, 0.35)){
+    if (chance(rng, 0.35 * run.baseStats.luckMul)){
       const room = world.rooms[randInt(rng, 0, world.rooms.length-1)];
       const x = (randInt(rng, room.x+1, room.x+room.w-2)+0.5)*TILE;
       const y = (randInt(rng, room.y+1, room.y+room.h-2)+0.5)*TILE;
@@ -1892,10 +1913,11 @@
         spawnBlood(run, target.x, target.y, 12);
 
         // drop ornaments
-        const drop = target.type===ENT.BOSS ? (10 + run.level*3) : 1;
+        const dropBase = target.type===ENT.BOSS ? (10 + run.level*3) : 1;
+        const drop = Math.ceil(dropBase * run.baseStats.greedMul);
         addOrnaments(run, drop);
         // also drop 0-2 present shards
-        const n = target.type===ENT.BOSS ? 0 : (chance(run.rng, 0.25) ? 1 : 0);
+        const n = target.type===ENT.BOSS ? 0 : (chance(run.rng, 0.25 * run.baseStats.luckMul) ? 1 : 0);
         for (let i=0;i<n;i++){
           addEnt(run, { type: ENT.ORNAMENT, x:target.x+(run.rng()*2-1)*8, y:target.y+(run.rng()*2-1)*8, r:5, life: 8 });
         }
@@ -1945,9 +1967,20 @@
   }
 
   function step(run, dt){
-    run.time += dt;
+    run.time = (run.time || 0) + dt;
 
     // Global mode transitions
+    if (run.mode === 'menu') {
+        if (key('Enter') && !run._enterDown) {
+            run._enterDown = true;
+            // Start game
+            const seed = (meta.lastSeed && Number.isFinite(meta.lastSeed)) ? (meta.lastSeed>>>0) : ((Math.random()*1e9)|0)>>>0;
+            startNewRun(seed);
+        }
+        if (!key('Enter')) run._enterDown = false;
+        return;
+    }
+
     if (run.mode==='dead' || run.mode==='win'){
       // allow enter to go to meta shop / restart
       if (key('Enter') && !run._enterDown){
@@ -2022,8 +2055,18 @@
         if (p.dash.charges>0 && (mx!==0||my!==0)){
           p.dash.charges -= 1;
           const [nx,ny]=norm2(mx,my);
-          for (let i=0;i<10;i++){
-            tryMoveCircle(world, p, nx*22, ny*22, run.ents);
+          const dashSteps = 8;
+          const dashDist = 10;
+          for (let i=0;i<dashSteps;i++){
+            run.ghosts.push({
+                x: p.x, y: p.y,
+                sprite: p.sprite,
+                frame: p.frame,
+                flip: p.flip,
+                life: 0.5,
+                maxLife: 0.5
+            });
+            tryMoveCircle(world, p, nx*dashDist, ny*dashDist, run.ents);
           }
           p.invuln = Math.max(p.invuln, 0.20);
         }
@@ -2185,7 +2228,7 @@
         e.life -= dt;
         // magnet to player
         const d = dist(e.x,e.y,p.x,p.y);
-        if (d<120){
+        if (d < run.baseStats.magnetRange){
           const [nx,ny]=norm2(p.x-e.x, p.y-e.y);
           e.x += nx*180*dt;
           e.y += ny*180*dt;
@@ -2279,8 +2322,19 @@
     }
     run.particles = run.particles.filter(q => q.life>0);
 
+    // Ghosts
+    for (const g of run.ghosts){
+      g.life -= dt;
+    }
+    run.ghosts = run.ghosts.filter(g => g.life>0);
+
     // Remove dead
     run.ents = run.ents.filter(e => !e.dead);
+
+    // Regen
+    if (run.baseStats.regenAmount > 0 && run.player.hp > 0 && run.mode === 'play') {
+        run.player.hp = Math.min(run.player.maxHp, run.player.hp + run.baseStats.regenAmount * dt);
+    }
 
     // If player died, convert to dead mode
     if (run.player.hp<=0 && run.mode==='play'){
@@ -2298,13 +2352,14 @@
   }
 
   function updateMetaUI(){
-    metaEl.textContent = `Meta 💠 ${meta.ornaments} | Skills: HP ${meta.skills.hp} · DMG ${meta.skills.dmg} · SPD ${meta.skills.spd} · RLD ${meta.skills.reload} · DASH ${meta.skills.dash}`;
+    // Simplified summary for UI
+    metaEl.textContent = `Meta 💠 ${meta.ornaments} | Skills Active`;
   }
 
   // -----------------------------
   // Meta shop / between-runs screen
   // -----------------------------
-  const SHOP_KEYS = ['hp','dmg','spd','reload','dash'];
+  const SHOP_KEYS = ['hp','dmg','spd','reload','dash','magnet','greed','regen','luck'];
 
   function stepShop(run, dt){
     // navigation
@@ -2362,10 +2417,38 @@
   // Rendering
   // -----------------------------
   function render(run){
+    ctx.clearRect(0,0,canvas.width, canvas.height);
+
+    if (run.mode === 'menu') {
+        // Draw Main Menu
+        if (menuImg.complete && menuImg.naturalWidth > 0) {
+            // Draw image covering the screen, maintaining aspect ratio or crop
+            // For simplicity, let's draw it covering (might stretch or crop)
+            // User said "make that be the main menu picture"
+            ctx.drawImage(menuImg, 0, 0, canvas.width, canvas.height);
+        } else {
+            // Fallback if image not loaded yet
+            ctx.fillStyle = '#111';
+            ctx.fillRect(0,0,canvas.width, canvas.height);
+        }
+
+        // Overlay text
+        ctx.fillStyle = 'rgba(0,0,0,0.5)';
+        ctx.fillRect(0, canvas.height - 100, canvas.width, 100);
+
+        ctx.textAlign = 'center';
+        ctx.fillStyle = '#ffffff';
+        ctx.font = '32px ui-monospace, monospace';
+        ctx.fillText('BAD SANTA', canvas.width/2, canvas.height - 60);
+        ctx.font = '16px ui-monospace, monospace';
+        ctx.fillStyle = '#d8e1ee';
+        ctx.fillText('Press Enter to Start', canvas.width/2, canvas.height - 30);
+        ctx.textAlign = 'start';
+        return;
+    }
+
     const world = run.world;
     const theme = world?.theme;
-
-    ctx.clearRect(0,0,canvas.width, canvas.height);
 
     if (!run.world){
       ctx.fillStyle = '#d8e1ee';
@@ -2424,6 +2507,18 @@
       const x=q.x-camX, y=q.y-camY;
       ctx.fillStyle = 'rgba(255,255,255,' + clamp(q.life*5,0,1) + ')';
       ctx.fillRect(Math.floor(x), Math.floor(y), 2, 2);
+    }
+
+    // ghosts
+    for (const g of run.ghosts){
+      const x = g.x - camX;
+      const y = g.y - camY;
+      const scale = 2;
+      const px = Math.floor(x - (g.sprite.w*scale)/2);
+      const py = Math.floor(y - (g.sprite.h*scale)/2);
+      ctx.globalAlpha = (g.life / g.maxLife) * 0.4;
+      g.sprite.draw(px,py,scale,Math.floor(g.frame)%2,g.flip);
+      ctx.globalAlpha = 1;
     }
 
     // entities
@@ -2634,9 +2729,8 @@
   // Boot
   // -----------------------------
   function boot(){
-    // First seed: either meta last seed, or random
-    const seed = (meta.lastSeed && Number.isFinite(meta.lastSeed)) ? (meta.lastSeed>>>0) : ((Math.random()*1e9)|0)>>>0;
-    startNewRun(seed);
+    // Start in menu
+    game = { mode: 'menu', time: 0 };
     update();
   }
 
