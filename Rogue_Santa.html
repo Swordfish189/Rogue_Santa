@@ -46,7 +46,7 @@
     <div id="help">
       <b>Bad Santa</b> (prototype): procedurally generated houses, permadeath per run, and a persistent skill tree.
       <br/>
-      <b>Controls</b>: <code>WASD</code> move · <code>IJKL</code> aim · <code>Space</code> shoot · <code>Shift</code> dash · <code>P</code> pause · <code>Enter</code> interact/advance.
+      <b>Controls</b>: <code>WASD</code> move · <code>IJKL</code> shoot (aim) · <code>Shift</code> dash · <code>P</code> pause · <code>Enter</code> interact/advance.
       <br/>
       <b>Goal</b>: clear the house, steal enough presents (🎁), then defeat the boss guarding the Christmas tree (🎄) to advance.
       <br/>
@@ -2077,7 +2077,7 @@
     const world = run.world;
     const p = run.player;
 
-    // Aim with IJKL
+    // Aim with IJKL (shoot direction keys)
     let ax=0, ay=0;
     if (key('KeyI')) ay -= 1;
     if (key('KeyK')) ay += 1;
@@ -2153,7 +2153,7 @@
 
     // Shooting
     p.gun.reload = Math.max(0, p.gun.reload - dt);
-    if (key('Space')){
+    if (key('Space') || ax!==0 || ay!==0){
       shoot(run);
       if(p.gun.reload === p.gun.reloadMax) audio.playWeaponShoot(p.gun.kind);
     }
